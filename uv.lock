@@ -1,0 +1,3 @@
+To intstall the nfl data in linux terminal commands:
+pip install nfl_data_py
+python -c "import nfl_data_py; print('OK')"
