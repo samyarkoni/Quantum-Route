@@ -2,6 +2,7 @@ import csv
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from nfl_RAPM import eligible_participants, fit_rapm, load_plays
 
@@ -44,10 +45,11 @@ class FootballRAPMTests(unittest.TestCase):
         self.assertTrue(diagnostics.conflicts)
 
     def test_special_teams_and_malformed_participation_are_excluded(self):
-        result = fit_rapm(self.write([
-            row("1", "kickoff"), row("2", offense="", defense="d1;d2"),
-            row("3", "pass", yards="8"),
-        ]))
+        with patch("nfl_RAPM.load_roster_metadata", return_value={}):
+            result = fit_rapm(self.write([
+                row("1", "kickoff"), row("2", offense="", defense="d1;d2"),
+                row("3", "pass", yards="8"),
+            ]), season=2024)
         self.assertEqual({item["play_type"] for item in result.rows}, {"pass"})
         self.assertEqual(result.diagnostics.excluded_play_types["kickoff"], 1)
 
@@ -62,10 +64,11 @@ class FootballRAPMTests(unittest.TestCase):
         self.assertEqual({pid for pid, _ in offense}, {"qb", "o1"})
 
     def test_sign_convention_and_separate_models(self):
-        result = fit_rapm(self.write([
-            row("1", "run", yards="10"), row("2", "run", yards="8"),
-            row("3", "pass", yards="5"), row("4", "pass", yards="7"),
-        ]), ridge=1)
+        with patch("nfl_RAPM.load_roster_metadata", return_value={}):
+            result = fit_rapm(self.write([
+                row("1", "run", yards="10"), row("2", "run", yards="8"),
+                row("3", "pass", yards="5"), row("4", "pass", yards="7"),
+            ]), ridge=1, season=2024)
         offense = [x for x in result.rows if x["side"] == "offense" and x["model"] == "rushing"]
         defense = [x for x in result.rows if x["side"] == "defense" and x["model"] == "rushing"]
         self.assertTrue(offense and defense)
@@ -73,13 +76,27 @@ class FootballRAPMTests(unittest.TestCase):
         self.assertIsInstance(offense[0]["estimated_yards_per_play"], float)
 
     def test_single_season_filter_and_output_label(self):
-        result = fit_rapm(self.write([
-            row("1", yards="10", season="2024"),
-            row("2", yards="2", season="2023"),
-        ]), season=2024)
+        with patch("nfl_RAPM.load_roster_metadata", return_value={}):
+            result = fit_rapm(self.write([
+                row("1", yards="10", season="2024"),
+                row("2", yards="2", season="2023"),
+            ]), season=2024)
         self.assertTrue(result.rows)
         self.assertEqual({item["season"] for item in result.rows}, {2024})
         self.assertEqual(result.diagnostics.excluded_other_seasons, 1)
+
+    def test_roster_team_and_position_are_exported_by_player_id(self):
+        metadata = {
+            "o1": {"team": "ATL", "position": "RB"},
+            "o2": {"team": "ATL", "position": "WR"},
+            "d1": {"team": "PIT", "position": "LB"},
+            "d2": {"team": "PIT", "position": "CB"},
+        }
+        with patch("nfl_RAPM.load_roster_metadata", return_value=metadata):
+            result = fit_rapm(self.write([row("1")]), season=2024)
+        player = next(item for item in result.rows if item["player_id"] == "o1")
+        self.assertEqual((player["team"], player["position"]), ("ATL", "RB"))
+        self.assertTrue(player["player_metadata_found"])
 
 
 if __name__ == "__main__":

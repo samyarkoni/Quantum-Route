@@ -42,6 +42,7 @@ class Diagnostics:
     excluded_missing_yards: int = 0
     excluded_missing_participants: int = 0
     excluded_other_seasons: int = 0
+    player_metadata_missing: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -163,6 +164,40 @@ def _control_values(row: Mapping[str, object]) -> list[tuple[str, float]]:
     return controls
 
 
+def load_roster_metadata(season: int) -> dict[str, dict[str, str]]:
+    """Load season-specific team and position mappings keyed by NFL player ID."""
+    try:
+        import nflreadpy
+    except ImportError as exc:
+        raise RuntimeError(
+            "Player team and position output requires the nflreadpy package"
+        ) from exc
+
+    roster = nflreadpy.load_rosters(seasons=[season])
+    required = {"gsis_id", "team", "position"}
+    missing = required.difference(roster.columns)
+    if missing:
+        raise ValueError(f"nflreadpy roster data is missing columns: {sorted(missing)}")
+
+    metadata: dict[str, dict[str, str]] = {}
+    for row in roster.select(["gsis_id", "team", "position"]).to_dicts():
+        player_id = str(row.get("gsis_id") or "").strip()
+        if not player_id:
+            continue
+        value = {
+            "team": str(row.get("team") or "").strip(),
+            "position": str(row.get("position") or "").strip(),
+        }
+        previous = metadata.get(player_id)
+        if previous is not None and previous != value:
+            raise ValueError(
+                f"nflreadpy returned conflicting season roster entries for {player_id}: "
+                f"{previous} vs {value}"
+            )
+        metadata[player_id] = value
+    return metadata
+
+
 def _fit_sparse_ridge(
     rows: Sequence[tuple[float, list[tuple[str, float]]]],
     ridge: float,
@@ -212,12 +247,14 @@ def fit_rapm(
 ) -> FitResult:
     """Fit separate jointly-adjusted rushing and passing yards models.
 
-    When ``season`` is supplied, only that season is fitted and every output
-    row is labeled with it. If a source omits ``season``, the first component
-    of its standard ``game_id`` is used when it is a four-digit year.
+    Only ``season`` is fitted and every output row is labeled with it. If a
+    source omits ``season``, the first component of its standard ``game_id`` is
+    used when it is a four-digit year.
     """
     if ridge <= 0:
         raise ValueError("ridge must be positive")
+    if season is None:
+        raise ValueError("season is required to fit and label season-specific estimates")
     plays, diagnostics = load_plays(paths)
     training: dict[str, list[tuple[float, list[tuple[str, float]], dict[str, object]]]] = defaultdict(list)
     control_names = sorted({
@@ -279,6 +316,7 @@ def fit_rapm(
             feature = f"{side}:{pid}"
             output.append({
                 "player_id": pid, "player_name": names[(side, pid)], "side": side,
+                "team": "", "position": "",
                 "season": int(season) if season is not None and str(season).isdigit() else (row_season or ""),
                 "model": model_type, "play_type": "run" if model_type == "rushing" else "pass",
                 "estimated_yards_per_play": coefficients.get(feature, 0.0) * (1 if side == "offense" else -1),
@@ -286,6 +324,19 @@ def fit_rapm(
                 "plays_included": count,
                 "model_plays": len(observations), "ridge": ridge,
             })
+    if output:
+        roster_metadata = load_roster_metadata(int(season))
+        for result_row in output:
+            metadata = roster_metadata.get(str(result_row["player_id"]))
+            if metadata is None:
+                diagnostics.player_metadata_missing.append(str(result_row["player_id"]))
+                result_row["player_metadata_found"] = False
+                continue
+            result_row["team"] = metadata["team"]
+            result_row["position"] = metadata["position"]
+            result_row["player_metadata_found"] = bool(metadata["team"] and metadata["position"])
+            if not result_row["player_metadata_found"]:
+                diagnostics.player_metadata_missing.append(str(result_row["player_id"]))
     return FitResult(output, diagnostics, tuple(control_names), ridge,
                      "joint sparse ridge", iterations, tuple(notes))
 

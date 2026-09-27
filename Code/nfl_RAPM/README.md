@@ -37,3 +37,10 @@ python3 Code/nfl_RAPM/nfl_RAPM.py Code/nfl_RAPM/TEAM_PARTICIPATION_STATS \
 The exported CSV contains one row per player, side, and model for the selected
 season. The `season` column identifies the fitted season; rerun with another
 `--season` value to create another season's estimates.
+
+The export also includes `team`, `position`, and `player_metadata_found`.
+These fields are looked up by GSIS player ID in the selected season's
+`nflreadpy.load_rosters` data. Players without a roster match retain blank team
+and position fields and are listed in `result.diagnostics.player_metadata_missing`
+when using the Python API. The tool does not guess metadata from a player's
+display name.
