@@ -1,0 +1,232 @@
+COACHING EFFECT VS PLAYER EFFECT IN THE NFL
+Quantum Route research note -- September 27, 2026
+Data: 2018-2025 regular seasons (4,254 team-games), nflverse schedules for coaches / starting QBs.
+Code: Code/Team_Model/coach_vs_player.py   Raw output: Data/Team_Model/coach_vs_player_results.txt
+
+==================================================================================================
+1. BOTTOM LINE
+==================================================================================================
+
+"Coaching vs players" has different answers depending on what you measure:
+
+  What is measured                      Head coach    Starting QB    Rest of roster/staff
+  ------------------------------------  ------------  -------------  --------------------
+  Offensive efficiency (EPA/play)          ~10%           ~59%              ~31%
+  Pass rate over expected (scheme)         ~14%           ~59%              ~27%
+  4th-down aggressiveness (decisions)      ~59%            ~9%              ~33%
+
+  (Share of the between-team variance on offense that each source explains; posterior means.
+   90% intervals are wide -- see section 3.)
+
+  * EFFICIENCY IS A PLAYER STORY, AND MOSTLY A QUARTERBACK STORY. One SD of QB quality is worth
+    ~0.076 EPA/play (about 4.7 points per game over ~62 snaps); one SD of head coach ~0.030 EPA/play
+    (about 1.9 points), and the coach interval nearly reaches zero.
+  * DECISION-MAKING IS A COACHING STORY. 4th-down aggressiveness follows the head coach across QBs
+    and teams (Dan Campbell, Nick Sirianni most aggressive; Jon Gruden, Bill Belichick, Mike Tomlin
+    least). The QB barely matters for it.
+  * "SCHEME" (PASS RATE OVER EXPECTED) FOLLOWS THE QB MORE THAN THE HEAD COACH. This is the
+    surprising result. Part of it is a data artifact (scrambles are recorded as runs), but most of
+    it survives the correction; the likelier story is that coaches adapt the call mix to the QB
+    they have. Pass rate is a coach decision that is largely *determined by* the QB.
+
+This matches the published literature: coaches matter, but in the NFL they explain a minority of
+team outcomes, while the QB is the single largest identifiable input to offensive performance.
+
+==================================================================================================
+2. WHAT PUBLISHED RESEARCH SAYS
+==================================================================================================
+
+Berry & Fowler, "How Much Do Coaches Matter?" (MIT Sloan Sports Analytics Conference, 2019).
+  Estimate leader effects across MLB, NBA, NHL, NFL, college football and college basketball with
+  randomization inference that accounts for player quality and schedule. Across sports, coaches
+  account for roughly 20-30% of the variation in team outcomes. In the NFL they find coach effects
+  on points allowed and point margin, and significant effects on fumbles and penalties; coaches
+  matter more in college football (where they also move points scored and wins) than in the pros.
+  Read for this project: NFL coach effects are real but modest, and show up in discipline-type
+  outcomes (ball security, penalties) as much as in scoring.
+
+Brian Burke, "On the Effect of Coaching" (Advanced Football Analytics, 2013).
+  Argument from variance decomposition: after randomness and player talent, "there is very little
+  variance left" for coaching. NFL coaches are near-interchangeable at the top because staffs are
+  large and best practices spread quickly; coaching shows more on the downside (avoiding disasters)
+  than the upside. No point estimate given.
+
+Eric Eager, "Building a Way to Measure NFL Coach Value" (SumerSports, Nov 2023).
+  Mixed-effects model on pre-game point spreads with random effects for QB and head coach (the same
+  structure as our analysis, but on the market's view of strength instead of on-field EPA). The
+  best coaches are worth only ~1.3-1.5 points of spread (Belichick +1.48, John Harbaugh +1.37,
+  Andy Reid +1.29), with wide credible intervals.
+
+Lopez, Matthews & Baumer, "How Often Does the Best Team Win?" (Annals of Applied Statistics, 2018).
+  Bayesian state-space models on betting-market data. Relevant context: game-to-game randomness
+  is large relative to talent differences in the NFL, which caps how much of any season's results
+  can be attributed to anyone, coach or player. Our "game" variance component is the same idea.
+
+Yurko, Ventura & Horowitz, "nflWAR" (Journal of Quantitative Analysis in Sports, 2019).
+  Multilevel models on public play-by-play to credit individual offensive players (EPA / win
+  probability) -- the methodological basis for crediting players rather than teams. QBs dominate
+  offensive WAR.
+
+Romer, "Do Firms Maximize? Evidence from Professional Football" (Journal of Political Economy,
+  2006). Using dynamic programming on 1998-2000 play-by-play, teams kicked on 4th down far more
+  often than win-maximizing play would dictate -- the canonical evidence that 4th-down behavior is
+  a coaching *decision* with systematic (and changeable) biases.
+
+Fourth-down trend reporting (FiveThirtyEight; Sportico 2024; NFL Next Gen Stats Decision Guide).
+  League go-for-it rates sat near 10% of 4th downs from 2006-2017, then climbed after 2018; teams
+  went for it 886 times in 2025 (1.63 per team-game) vs 476 in 2015. Detroit under Dan Campbell
+  posted the three highest single-season go rates (~30%, 2021-2023). When the NGS model favored
+  going for it by 2+ points of win probability, teams went 31% of the time in 2017 and 53% in 2020.
+  Consistent with our finding that go-rate over expected is a head-coach trait.
+
+Pass rate over expected (PROE). Standard public definition (nflfastR xpass): actual pass rate
+  minus a model's expected pass rate given down, distance, field position, clock and score.
+  Public commentary usually treats PROE and pace as play-caller traits; one analysis reports pace
+  moves with the play-caller more than the QB. Our data complicates that for PROE (section 3).
+
+==================================================================================================
+3. WHAT OUR DATA SAYS
+==================================================================================================
+
+Method.
+  Each team-game outcome y is split into crossed random effects, fit with the project's hand-rolled
+  Metropolis-within-Gibbs sampler (Code/Team_Model/mcmc.py):
+
+      y[game] = mu + coach + QB + roster(team-season) + opponent(opponent-season) + game noise
+      each effect ~ Normal(0, tau_group);  game noise variance = per-play variance / n_plays + omega^2
+
+  - coach  = head coach that game;  QB = starting QB that game (nflverse schedules)
+  - roster = everything constant within a team-season: the other 21 starters, coordinators, staff
+  - opponent absorbs schedule strength; omega absorbs game-level noise (weather, game plan, luck)
+  - Outcomes: offensive EPA/play (from our EP model, garbage time excluded); pass rate over expected
+    on 1st-3rd down (league logistic model with down, distance, field position, score, clock);
+    4th-down go rate over expected (same features). Shares are tau^2 of each offensive source over
+    the sum of coach + QB + roster.
+
+  Identification comes from movement: 13 head coaches led 2+ teams, 68 of 82 coaches started 2+ QBs
+  (injuries and benchings), and 79 of 150 QBs started under 2+ head coaches. The backup-QB games
+  (same coach, same roster, different QB) are the cleanest contrast in the data.
+
+  Convergence: 4 chains x 10,000 draws (thinned by 4); every parameter R-hat <= 1.009, ESS >= 347.
+  The first attempt did NOT converge (R-hat up to 2.09): small variance components produce the
+  classic hierarchical "funnel". A joint rescaling move for (tau, effects) fixed it (see
+  mcmc.scale_update); results were stable between the unconverged and converged runs.
+
+Results (posterior mean SD of each source, [90% interval], share of offense variance).
+
+  Offensive EPA/play
+    head coach   0.030 [0.008, 0.048]   share 10% [ 1%, 22%]
+    QB           0.076 [0.061, 0.093]   share 59% [44%, 72%]
+    roster       0.055 [0.046, 0.065]   share 31% [20%, 44%]
+    opponent     0.058                  (defense faced)
+    game noise   0.051
+    Top QB effects: Mahomes +0.165, Brees +0.136, Purdy +0.135, Lamar Jackson +0.131, Allen +0.130.
+    Top coach effects are small and uncertain (LaFleur, Quinn, Shanahan ~ +0.03 +/- 0.03).
+
+  Pass rate over expected (percentage points)
+    head coach   1.8 [1.2, 2.5]          share 14% [ 6%, 24%]
+    QB           3.8 [3.2, 4.5]          share 59% [49%, 69%]
+    roster       2.5 [2.2, 2.9]          share 27% [19%, 35%]
+    opponent     1.7,  game noise 4.0
+    Pass-heavy QBs: Roethlisberger, Brady, Burrow, Mahomes, Rodgers (+6 to +8 pts).
+    Run-heavy QBs are the scramblers / designed-run QBs: Willis, Huntley, Fields (-7 to -10 pts).
+    Pass-heavy coaches: Kevin O'Connell, Andy Reid, Bruce Arians; run-heavy: Arthur Smith,
+    Brian Daboll, Steve Wilks (all ~ +/-2-3 pts, wide intervals).
+
+  4th-down go rate over expected (percentage points)
+    head coach   2.6 [1.9, 3.2]          share 59% [36%, 78%]
+    QB           0.9 [0.1, 1.7]          share  9% [ 0%, 25%]
+    roster       1.9 [1.3, 2.4]          share 33% [16%, 50%]
+    Most aggressive: Dan Campbell +5.9, Nick Sirianni +4.9, Brandon Staley +3.8, Kevin Stefanski +3.2.
+    Least: Jon Gruden -3.9, Bill Belichick -3.7, Adam Gase -3.2, Mike Tomlin -2.5.
+
+Model-free check: year-over-year correlation of team-season averages, by what changed.
+
+                              pairs   EPA/play   Pass rate o.e.   4th-down go o.e.
+    same coach, same QB        109      0.47         0.68              0.56
+    same coach, new QB          59      0.22         0.14              0.37
+    new coach, same QB          27      0.19         0.55              0.12
+    new coach, new QB           28     -0.16        -0.14              0.23
+
+  Read across rows: keeping the QB preserves pass-rate identity (0.55) far better than keeping the
+  coach (0.14); keeping the coach preserves 4th-down identity (0.37) far better than keeping the QB
+  (0.12). EPA/play loses persistence whichever one changes. Small samples (27-59 pairs), so treat
+  as corroboration, not proof.
+
+Scramble check (is the QB effect on pass rate just labeling?).
+  In this data scrambles are recorded as run plays. From 2023 on, coverage is charted on the runs
+  that were scrambles (7.5% of "runs", averaging 7.6 yards vs 4.5), so those seasons can be redone
+  as dropback rate. On 2023-2025:
+      as labeled:                       coach 31%, QB 48%, roster 21%
+      scrambles counted as dropbacks:   coach 28%, QB 43%, roster 30%
+  Relabeling trims the QB share a little; the QB remains the largest source. (The coach share is
+  larger in these three seasons than over 2018-2025, but the intervals overlap heavily.)
+
+==================================================================================================
+4. INTERPRETATION AND CAVEATS
+==================================================================================================
+
+  * "Head coach" is not "play-caller". Many head coaches (especially defensive ones -- Staley,
+    Tomlin, Belichick) do not call offensive plays, and offensive coordinators change more often.
+    OC effects are inside the roster/team-season term here. Play-caller data would sharpen the
+    pass-rate result; the head coach is the right unit for 4th-down calls, which HCs make.
+  * The analysis covers the OFFENSE only. Defensive-minded head coaches may add value on the other
+    side of the ball that this decomposition does not see (Berry & Fowler find NFL coach effects on
+    points allowed).
+  * Coaches choose QBs and adapt to them. When a coach passes more with his starter than with the
+    backup, the model credits the QB. "QB effect on pass rate" should be read as "pass rate moves
+    with the QB", not "the QB decides".
+  * Selection: coaches who keep jobs, and QBs who keep starting, are the good ones; movers may
+    differ from stayers. Random-effects shrinkage handles small samples, not selection.
+  * EPA/play is not wins. Coaching value in clock management, 2-point and timeout decisions, and
+    player development is mostly outside these three outcomes.
+  * 2018-2025 only. Earlier eras (pre-analytics 4th-down behavior) would show different shares.
+
+==================================================================================================
+5. WHAT THIS MEANS FOR QUANTUM ROUTE
+==================================================================================================
+
+  1. Team strength should be built from PLAYERS, led by the QB. When a starting QB is injured or
+     benched, the team's offensive EPA prior should move by the QB-effect difference (~0.076
+     EPA/play per SD, ~4.7 points/game), and the market often under- or over-adjusts on backup
+     starts. Next step: add a QB term to team_strength.TeamStrengthModel so a QB change moves the
+     offense prior immediately instead of waiting for recency weighting to catch up.
+  2. 4th-down tendencies should follow the HEAD COACH. On a coaching change, carry the coach's
+     go-offset to the new team rather than the team's history (TeamTendencyModel currently keys
+     on team; keying the go-offset on coach is a small change).
+  3. Pass-rate tendencies should follow the QB-coach pair, weighted toward the QB.
+  4. Coaching adds little to point-spread prediction on its own (~1-2 points for the best coaches,
+     per both our EPA estimates and Eager's spread model). Its main value to the simulator is
+     through decisions (4th downs), which change game variance and totals more than means.
+  5. Offseason carryover (data.recency_weights, carryover=0.5) should depend on what changed:
+     same coach + same QB warrants much more carryover (year-over-year r = 0.47 for EPA) than a
+     team that replaced both (r ~ 0).
+
+==================================================================================================
+SOURCES
+==================================================================================================
+
+Berry, C. R. & Fowler, A. (2019). How Much Do Coaches Matter? MIT Sloan Sports Analytics Conference.
+  https://www.sloansportsconference.com/research-papers/how-much-do-coaches-matter
+  Summary: https://news.uchicago.edu/story/how-much-do-coaches-impact-success-sports
+Burke, B. (2013). On the Effect of Coaching. Advanced Football Analytics.
+  https://www.advancedfootballanalytics.com/2013/10/on-effect-of-coaching.html
+Eager, E. (2023). Building a Way to Measure NFL Coach Value. SumerSports.
+  https://sumersports.com/the-zone/building-a-way-to-measure-nfl-coach-value/
+Lopez, M. J., Matthews, G. J. & Baumer, B. S. (2018). How Often Does the Best Team Win? Annals of
+  Applied Statistics 12(4), 2483-2516. https://arxiv.org/abs/1701.05976
+Yurko, R., Ventura, S. & Horowitz, M. (2019). nflWAR: a reproducible method for offensive player
+  evaluation in football. JQAS 15(3), 163-183. https://arxiv.org/pdf/1802.00998
+Romer, D. (2006). Do Firms Maximize? Evidence from Professional Football. Journal of Political
+  Economy 114(2), 340-365. https://eml.berkeley.edu/~dromer/papers/JPE_April06.pdf
+FiveThirtyEight. NFL coaches are finally getting more aggressive on fourth down.
+  https://fivethirtyeight.com/features/nfl-coaches-are-finally-getting-more-aggressive-on-fourth-down
+Sportico (2024). NFL Teams Go for Fourth Downs More Than Ever, Following Lions' Lead.
+  https://www.sportico.com/leagues/football/2024/detroit-lions-dan-campbell-nfl-stats-fourth-down-1234817656/
+NFL.com. Introducing the Next Gen Stats Decision Guide.
+  https://www.nfl.com/news/introducing-the-next-gen-stats-decision-guide-a-new-analytics-tool-for-fourth-do
+Yahoo Sports. Are NFL teams going for it on fourth down too often?
+  https://sports.yahoo.com/nfl/article/are-nfl-teams-going-for-it-on-fourth-down-too-often-and-will-that-trend-reverse-itself-200141842.html
+Establish The Run. Pass Rate Over Expectation. https://establishtherun.com/pass-rate-over-expectation/
+The Spade. Predicting the 2026 NFL Season's Fastest Offenses (pace vs play-caller).
+  https://thespade.substack.com/p/predicting-the-2026-nfl-seasons-fastest
