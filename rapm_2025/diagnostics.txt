@@ -1,0 +1,167 @@
+Football RAPM diagnostics
+Rows after de-duplication: 48,771
+Games: 285
+Seasons: 2025
+Teams: ARI, ATL, BAL, BUF, CAR, CHI, CIN, CLE, DAL, DEN, DET, GB, HOU, IND, JAX, KC, LA, LAC, LV, MIA, MIN, NE, NO, NYG, NYJ, PHI, PIT, SEA, SF, TB, TEN, WAS
+Drop counts: missing_play_type=4, unsupported_play_type=14,841, missing_or_nonfinite_yards=0, missing_player_lists=0
+Starting/ending yardage absolute-distance mismatch rate (1-yard tolerance): 0.0000%
+
+[rapm_rush]
+Plays: 14,785
+Distinct player IDs: 1,971
+Players/columns: 2,031
+Chosen lambda: 316.228
+CV RMSE (intercept-only): 4.599786
+CV RMSE (baseline-only): 4.527853
+CV RMSE (full model, pass-1 joint fit): 4.577477
+Passes: 6
+Largest within-group deviation change: 0.01279625
+Coefficient mean and SD by group:
+  ('defense', 'on_field', 'DB'): mean=-0.153502, sd=0.085623, n=390
+  ('defense', 'on_field', 'DL'): mean=0.178807, sd=0.101179, n=327
+  ('defense', 'on_field', 'LB'): mean=0.061835, sd=0.081636, n=284
+  ('defense', 'on_field', 'RB'): mean=-0.027643, sd=0.028694, n=8
+  ('defense', 'on_field', 'TE'): mean=-0.058567, sd=0.014152, n=3
+  ('defense', 'on_field', 'WR'): mean=0.216128, sd=0.035516, n=10
+  ('offense', 'on_field', 'DB'): mean=0.100746, sd=0.034315, n=14
+  ('offense', 'on_field', 'DL'): mean=-0.392185, sd=0.038401, n=11
+  ('offense', 'on_field', 'LB'): mean=-0.054570, sd=0.021636, n=21
+  ('offense', 'on_field', 'OL'): mean=-0.024613, sd=0.075067, n=327
+  ('offense', 'on_field', 'QB'): mean=0.111165, sd=0.076337, n=80
+  ('offense', 'on_field', 'RB'): mean=-0.003937, sd=0.080432, n=152
+  ('offense', 'on_field', 'SPEC'): mean=-0.084718, sd=0.028887, n=18
+  ('offense', 'on_field', 'TE'): mean=-0.102339, sd=0.084783, n=142
+  ('offense', 'on_field', 'WR'): mean=0.115275, sd=0.082797, n=244
+Within-group deviation mean and SD:
+  ('defense', 'on_field', 'DB'): mean=0.004665, sd=0.085623, n=390
+  ('defense', 'on_field', 'DL'): mean=-0.014203, sd=0.101179, n=327
+  ('defense', 'on_field', 'LB'): mean=-0.003626, sd=0.081636, n=284
+  ('defense', 'on_field', 'RB'): mean=0.014352, sd=0.028694, n=8
+  ('defense', 'on_field', 'TE'): mean=0.000000, sd=0.014152, n=3
+  ('defense', 'on_field', 'WR'): mean=-0.022209, sd=0.035516, n=10
+  ('offense', 'on_field', 'DB'): mean=-0.010843, sd=0.034315, n=14
+  ('offense', 'on_field', 'DL'): mean=0.011442, sd=0.038401, n=11
+  ('offense', 'on_field', 'LB'): mean=-0.001325, sd=0.021636, n=21
+  ('offense', 'on_field', 'OL'): mean=-0.005701, sd=0.075067, n=327
+  ('offense', 'on_field', 'QB'): mean=-0.028939, sd=0.076337, n=80
+  ('offense', 'on_field', 'RB'): mean=-0.007349, sd=0.080432, n=152
+  ('offense', 'on_field', 'SPEC'): mean=-0.002628, sd=0.028887, n=18
+  ('offense', 'on_field', 'TE'): mean=-0.010419, sd=0.084783, n=142
+  ('offense', 'on_field', 'WR'): mean=-0.002795, sd=0.082797, n=244
+Split-half reliability:
+  ('defense', 'on_field', 'DB'): 0.186108
+  ('defense', 'on_field', 'DL'): 0.119441
+  ('defense', 'on_field', 'LB'): 0.139608
+  ('offense', 'on_field', 'OL'): 0.229462
+  ('offense', 'on_field', 'QB'): 0.275670
+  ('offense', 'on_field', 'RB'): 0.371359
+  ('offense', 'on_field', 'TE'): -0.216402
+  ('offense', 'on_field', 'WR'): -0.264269
+
+[rapm_pass]
+Plays: 19,141
+Distinct player IDs: 1,936
+Players/columns: 1,983
+Chosen lambda: 1000
+CV RMSE (intercept-only): 7.047448
+CV RMSE (baseline-only): 7.021042
+CV RMSE (full model, pass-1 joint fit): 7.022112
+Passes: 6
+Largest within-group deviation change: 0.00491500
+Coefficient mean and SD by group:
+  ('defense', 'on_field', 'DB'): mean=-0.002725, sd=0.061009, n=392
+  ('defense', 'on_field', 'DL'): mean=0.017454, sd=0.060091, n=325
+  ('defense', 'on_field', 'LB'): mean=0.024310, sd=0.054853, n=278
+  ('defense', 'on_field', 'OL'): mean=0.016755, sd=0.001862, n=2
+  ('defense', 'on_field', 'RB'): mean=-0.024201, sd=0.007417, n=5
+  ('defense', 'on_field', 'TE'): mean=0.009562, sd=0.002896, n=2
+  ('defense', 'on_field', 'WR'): mean=0.197449, sd=0.013995, n=9
+  ('offense', 'on_field', 'DB'): mean=-0.319937, sd=0.027893, n=9
+  ('offense', 'on_field', 'DL'): mean=-0.142891, sd=0.013032, n=7
+  ('offense', 'on_field', 'LB'): mean=0.013047, sd=0.007696, n=16
+  ('offense', 'on_field', 'OL'): mean=0.000975, sd=0.064431, n=324
+  ('offense', 'on_field', 'QB'): mean=0.092570, sd=0.054676, n=78
+  ('offense', 'on_field', 'RB'): mean=0.003128, sd=0.056160, n=146
+  ('offense', 'on_field', 'SPEC'): mean=0.011375, sd=0.007823, n=11
+  ('offense', 'on_field', 'TE'): mean=0.022335, sd=0.069749, n=139
+  ('offense', 'on_field', 'WR'): mean=-0.016932, sd=0.065156, n=240
+Within-group deviation mean and SD:
+  ('defense', 'on_field', 'DB'): mean=-0.001390, sd=0.061009, n=392
+  ('defense', 'on_field', 'DL'): mean=-0.006067, sd=0.060091, n=325
+  ('defense', 'on_field', 'LB'): mean=-0.001329, sd=0.054853, n=278
+  ('defense', 'on_field', 'OL'): mean=0.000000, sd=0.001862, n=2
+  ('defense', 'on_field', 'RB'): mean=-0.002172, sd=0.007417, n=5
+  ('defense', 'on_field', 'TE'): mean=-0.000000, sd=0.002896, n=2
+  ('defense', 'on_field', 'WR'): mean=-0.030737, sd=0.013995, n=9
+  ('offense', 'on_field', 'DB'): mean=0.050997, sd=0.027893, n=9
+  ('offense', 'on_field', 'DL'): mean=0.024158, sd=0.013032, n=7
+  ('offense', 'on_field', 'LB'): mean=0.000000, sd=0.007696, n=16
+  ('offense', 'on_field', 'OL'): mean=-0.004653, sd=0.064431, n=324
+  ('offense', 'on_field', 'QB'): mean=-0.020755, sd=0.054676, n=78
+  ('offense', 'on_field', 'RB'): mean=0.000526, sd=0.056160, n=146
+  ('offense', 'on_field', 'SPEC'): mean=0.000000, sd=0.007823, n=11
+  ('offense', 'on_field', 'TE'): mean=-0.005542, sd=0.069749, n=139
+  ('offense', 'on_field', 'WR'): mean=-0.001596, sd=0.065156, n=240
+Split-half reliability:
+  ('defense', 'on_field', 'DB'): 0.299356
+  ('defense', 'on_field', 'DL'): 0.127292
+  ('defense', 'on_field', 'LB'): 0.201972
+  ('offense', 'on_field', 'OL'): 0.502658
+  ('offense', 'on_field', 'QB'): 0.408341
+  ('offense', 'on_field', 'RB'): 0.433847
+  ('offense', 'on_field', 'TE'): 0.403162
+  ('offense', 'on_field', 'WR'): 0.418796
+
+[rapm_all_plays]
+Plays: 33,926
+Distinct player IDs: 1,998
+Players/columns: 2,090
+Chosen lambda: 1000
+CV RMSE (intercept-only): 6.101960
+CV RMSE (baseline-only): 6.059578
+CV RMSE (full model, pass-1 joint fit): 6.083651
+Passes: 6
+Largest within-group deviation change: 0.00666292
+Coefficient mean and SD by group:
+  ('defense', 'on_field', 'DB'): mean=-0.059395, sd=0.062618, n=398
+  ('defense', 'on_field', 'DL'): mean=0.072541, sd=0.060018, n=327
+  ('defense', 'on_field', 'LB'): mean=0.043815, sd=0.056557, n=291
+  ('defense', 'on_field', 'OL'): mean=0.016182, sd=0.002092, n=2
+  ('defense', 'on_field', 'RB'): mean=-0.028041, sd=0.009997, n=12
+  ('defense', 'on_field', 'TE'): mean=-0.009139, sd=0.005080, n=5
+  ('defense', 'on_field', 'WR'): mean=0.259012, sd=0.014921, n=18
+  ('offense', 'on_field', 'DB'): mean=-0.194418, sd=0.015410, n=18
+  ('offense', 'on_field', 'DL'): mean=-0.292865, sd=0.014915, n=13
+  ('offense', 'on_field', 'LB'): mean=-0.000722, sd=0.009000, n=30
+  ('offense', 'on_field', 'OL'): mean=-0.017565, sd=0.059064, n=328
+  ('offense', 'on_field', 'QB'): mean=0.099221, sd=0.053842, n=80
+  ('offense', 'on_field', 'RB'): mean=0.017059, sd=0.055806, n=154
+  ('offense', 'on_field', 'SPEC'): mean=-0.009068, sd=0.010558, n=25
+  ('offense', 'on_field', 'TE'): mean=-0.021448, sd=0.072510, n=142
+  ('offense', 'on_field', 'WR'): mean=0.055046, sd=0.066370, n=247
+Within-group deviation mean and SD:
+  ('defense', 'on_field', 'DB'): mean=0.001315, sd=0.062618, n=398
+  ('defense', 'on_field', 'DL'): mean=-0.008658, sd=0.060018, n=327
+  ('defense', 'on_field', 'LB'): mean=-0.001951, sd=0.056557, n=291
+  ('defense', 'on_field', 'OL'): mean=-0.000000, sd=0.002092, n=2
+  ('defense', 'on_field', 'RB'): mean=0.003764, sd=0.009997, n=12
+  ('defense', 'on_field', 'TE'): mean=0.000000, sd=0.005080, n=5
+  ('defense', 'on_field', 'WR'): mean=-0.036975, sd=0.014921, n=18
+  ('offense', 'on_field', 'DB'): mean=0.028448, sd=0.015410, n=18
+  ('offense', 'on_field', 'DL'): mean=0.024543, sd=0.014915, n=13
+  ('offense', 'on_field', 'LB'): mean=-0.000971, sd=0.009000, n=30
+  ('offense', 'on_field', 'OL'): mean=-0.005732, sd=0.059064, n=328
+  ('offense', 'on_field', 'QB'): mean=-0.024848, sd=0.053842, n=80
+  ('offense', 'on_field', 'RB'): mean=-0.005319, sd=0.055806, n=154
+  ('offense', 'on_field', 'SPEC'): mean=-0.001680, sd=0.010558, n=25
+  ('offense', 'on_field', 'TE'): mean=-0.011554, sd=0.072510, n=142
+  ('offense', 'on_field', 'WR'): mean=-0.005578, sd=0.066370, n=247
+Split-half reliability:
+  ('defense', 'on_field', 'DB'): 0.237790
+  ('defense', 'on_field', 'DL'): 0.063127
+  ('defense', 'on_field', 'LB'): 0.173962
+  ('offense', 'on_field', 'OL'): 0.345760
+  ('offense', 'on_field', 'QB'): 0.159655
+  ('offense', 'on_field', 'RB'): 0.238492
+  ('offense', 'on_field', 'TE'): 0.227275
+  ('offense', 'on_field', 'WR'): 0.328219
