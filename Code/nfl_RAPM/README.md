@@ -86,15 +86,19 @@ situational baseline. Group-prior shrinkage can be disabled with
 scheme controls. The lambda grid accepts explicit values or a log-spaced range,
 such as `--lambda-grid 10:100000:9`.
 
-Useful controls include `--folds`, `--max-passes`, `--tol`, `--cap`, `--shrink`,
-`--min-plays`, `--min-carries`, and `--seed`. Yardage beyond 15 yards is shrunk
-toward 15 by default (`--cap 15 --shrink 0.25`).
+Useful controls include `--folds`, `--max-passes`, `--tol`, `--cap`,
+`--min-plays`, `--min-carries`, and `--seed`. Yardage is hard-clipped to the
+range from -15 to +15 by default (`--cap 15`).
 
 The output directory contains `rapm_rush.csv`, `rapm_pass.csv`,
 `rapm_all_plays.csv`, `rapm_qb.csv`, and `diagnostics.txt`. With
 `--export-expectations`, it also contains `play_expectations.csv`, with expected
 yards for each side and offense/defense performance residuals for each of the
-three fits. Leaderboards are printed to the console.
+three fits. The pooled `rapm_all_plays.csv` retains its pooled RAPM and includes
+separate `rush_rapm` and `pass_rapm` estimates, per-100-play values, and
+play-count columns for each player's matching side and role; a blank component
+means the player had no observations in that play-type fit. Leaderboards are
+printed to the console.
 
 ## Limitations
 

@@ -69,17 +69,11 @@ class FitResult:
     group_priors_enabled: bool
 
 
-def normalize_yards(yards: float, cap: float = 15.0, shrink: float = 0.25) -> float:
-    """Shrink yardage beyond ``cap`` toward the cap without changing its sign."""
+def normalize_yards(yards: float, cap: float = 15.0) -> float:
+    """Clip yardage to the inclusive range from ``-cap`` to ``cap``."""
     if cap < 0:
         raise ValueError("cap must be non-negative")
-    if not 0 <= shrink <= 1:
-        raise ValueError("shrink must be between 0 and 1")
-    value = float(yards)
-    magnitude = abs(value)
-    if magnitude <= cap:
-        return value
-    return math.copysign(cap + shrink * (magnitude - cap), value)
+    return float(np.clip(float(yards), -cap, cap))
 
 
 def _resolve_inputs(input_value: str) -> list[Path]:
@@ -412,7 +406,7 @@ def _score_differential(data: pd.DataFrame) -> pd.Series:
 
 
 def clean_plays(
-    data: pd.DataFrame, cap: float, shrink: float, use_score: bool
+    data: pd.DataFrame, cap: float, use_score: bool
 ) -> tuple[pd.DataFrame, dict[str, int], float]:
     """Filter to run/pass plays and add normalized yards while retaining raw yards."""
     _print_data_checks(data)
@@ -450,7 +444,7 @@ def clean_plays(
         cleaned["play_type"].str.strip().str.lower().isin({"run", "rush"}), "rush", "pass"
     )
     cleaned["raw_yards"] = yards.loc[cleaned.index].astype(float)
-    cleaned["yards"] = cleaned["raw_yards"].map(lambda value: normalize_yards(value, cap, shrink))
+    cleaned["yards"] = cleaned["raw_yards"].map(lambda value: normalize_yards(value, cap))
     if "season" not in cleaned:
         cleaned["season"] = ""
     cleaned["season"] = cleaned["season"].fillna("").astype(str)
@@ -1199,6 +1193,37 @@ def _format_outputs(
     return output
 
 
+def _add_play_type_components(
+    all_plays: pd.DataFrame,
+    rush: pd.DataFrame,
+    passing: pd.DataFrame,
+    by_season: bool,
+) -> pd.DataFrame:
+    """Attach separate rush/pass estimates to each pooled player row."""
+    keys = ["player_id", "side", "role"]
+    if by_season:
+        keys.append("season")
+    output = all_plays.copy()
+    for key in keys:
+        if key not in output:
+            output[key] = pd.Series(dtype="string")
+    for play_type, component in (("rush", rush), ("pass", passing)):
+        component_columns = keys + ["rapm", "rapm_per_100", "n_plays"]
+        if component.empty:
+            selected = pd.DataFrame(columns=component_columns)
+        else:
+            selected = component[component_columns]
+        renamed = selected.rename(
+            columns={
+                "rapm": f"{play_type}_rapm",
+                "rapm_per_100": f"{play_type}_rapm_per_100",
+                "n_plays": f"{play_type}_n_plays",
+            }
+        )
+        output = output.merge(renamed, on=keys, how="left", validate="one_to_one")
+    return output
+
+
 def _make_qb_view(
     pass_result: FitResult,
     rush_result: FitResult,
@@ -1441,9 +1466,7 @@ def run_analysis(args: argparse.Namespace) -> None:
         else {}
     )
     score_running = _score_is_running(data)
-    cleaned, dropped, yardage_mismatch_rate = clean_plays(
-        data, args.cap, args.shrink, score_running
-    )
+    cleaned, dropped, yardage_mismatch_rate = clean_plays(data, args.cap, score_running)
     if args.by_season and cleaned["season"].eq("").all():
         raise ValueError("--by-season requires a season column or derivable season in game_id")
     offense_global, offense_season = _load_offense_positions(args.positions)
@@ -1507,6 +1530,13 @@ def run_analysis(args: argparse.Namespace) -> None:
     outputs: dict[str, pd.DataFrame] = {}
     for name, result in result_by_name.items():
         output = _format_outputs(result, metadata)
+        if name == "rapm_all_plays":
+            output = _add_play_type_components(
+                output,
+                _format_outputs(result_by_name["rapm_rush"], metadata),
+                _format_outputs(result_by_name["rapm_pass"], metadata),
+                args.by_season,
+            )
         if args.by_season and "season" not in output:
             output["season"] = pd.Series(dtype=str)
         columns = [
@@ -1528,6 +1558,17 @@ def run_analysis(args: argparse.Namespace) -> None:
                 "rank_in_group",
             ]
         )
+        if name == "rapm_all_plays":
+            columns.extend(
+                [
+                    "rush_rapm",
+                    "rush_rapm_per_100",
+                    "rush_n_plays",
+                    "pass_rapm",
+                    "pass_rapm_per_100",
+                    "pass_n_plays",
+                ]
+            )
         if args.bootstrap > 0:
             columns.extend(["p10", "p90"])
         for column in columns:
@@ -1577,7 +1618,7 @@ def run_analysis(args: argparse.Namespace) -> None:
 
 def _run_selftest() -> None:
     """Exercise normalization, sign recovery, and deterministic seeded fitting."""
-    expected = {10: 10, 15: 15, 23: 17, 55: 25, -18: -15.75, -40: -21.25}
+    expected = {10: 10, 15: 15, 23: 15, 55: 15, -18: -15, -40: -15}
     for value, result in expected.items():
         assert normalize_yards(value) == result, (value, normalize_yards(value), result)
     offense, season_positions, defense = _make_position_maps(
@@ -1597,6 +1638,60 @@ def _run_selftest() -> None:
     )
     assert _position_group("RB") == "RB"
     assert _position_group("UNK") == "UNK"
+    pooled = pd.DataFrame(
+        [
+            {"player_id": "p1", "side": "offense", "role": "on_field", "season": ""},
+            {"player_id": "p1", "side": "defense", "role": "on_field", "season": ""},
+        ]
+    )
+    rush = pd.DataFrame(
+        [
+            {
+                "player_id": "p1",
+                "side": "offense",
+                "role": "on_field",
+                "season": "",
+                "rapm": 0.2,
+                "rapm_per_100": 20.0,
+                "n_plays": 12,
+            }
+        ]
+    )
+    passing = pd.DataFrame(
+        [
+            {
+                "player_id": "p1",
+                "side": "offense",
+                "role": "on_field",
+                "season": "",
+                "rapm": 0.3,
+                "rapm_per_100": 30.0,
+                "n_plays": 34,
+            }
+        ]
+    )
+    components = _add_play_type_components(pooled, rush, passing, by_season=False)
+    assert components.loc[0, "rush_rapm"] == 0.2
+    assert components.loc[0, "pass_rapm"] == 0.3
+    assert pd.isna(components.loc[1, "rush_rapm"])
+    assert components.loc[1, "side"] == "defense"
+    seasonal_pooled = pd.concat(
+        [pooled.iloc[[0]].assign(season="2023"), pooled.iloc[[0]].assign(season="2024")],
+        ignore_index=True,
+    )
+    seasonal_rush = pd.concat(
+        [
+            rush.assign(season="2023"),
+            rush.assign(season="2024", rapm=0.4, rapm_per_100=40.0),
+        ],
+        ignore_index=True,
+    )
+    seasonal_components = _add_play_type_components(
+        seasonal_pooled, seasonal_rush, passing.assign(season="2024"), by_season=True
+    )
+    assert seasonal_components["rush_rapm"].tolist() == [0.2, 0.4]
+    assert pd.isna(seasonal_components.loc[0, "pass_rapm"])
+    assert seasonal_components.loc[1, "pass_rapm"] == 0.3
     seed = 731
     rng = np.random.default_rng(seed)
     n_games, plays_per_game, n_teams = 60, 500, 24
@@ -1839,7 +1934,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--by-season", action="store_true", help="Estimate separate player-season effects")
     parser.add_argument("--cap", type=float, default=15.0, help="Yardage cap threshold (default: 15)")
-    parser.add_argument("--shrink", type=float, default=0.25, help="Beyond-cap shrink factor (default: 0.25)")
     parser.add_argument("--folds", type=int, default=5, help="Game-grouped cross-validation folds")
     parser.add_argument(
         "--lambda-grid",
@@ -1877,8 +1971,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--folds must be >= 2, --max-passes >= 1, and --bootstrap >= 0")
     if args.min_plays < 0 or args.min_carries < 0 or args.tol < 0:
         parser.error("play thresholds and --tol must be non-negative")
-    if args.cap < 0 or not 0 <= args.shrink <= 1:
-        parser.error("--cap must be non-negative and --shrink must be between 0 and 1")
+    if args.cap < 0:
+        parser.error("--cap must be non-negative")
     run_analysis(args)
     return 0
 
