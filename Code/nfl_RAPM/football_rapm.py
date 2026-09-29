@@ -260,13 +260,16 @@ def _load_nflreadpy_positions(player_ids: set[str]) -> dict[str, str]:
         if raw_id is None or pd.isna(raw_id):
             continue
         player_id = str(raw_id).strip()
-        raw_position = row.get("position")
-        if raw_position is None or pd.isna(raw_position) or not str(raw_position).strip():
-            raw_position = row.get("ngs_position")
-        if raw_position is not None and not pd.isna(raw_position):
-            position = str(raw_position).strip().upper()
-            if player_id and position:
-                database_positions[player_id] = position
+        position = next(
+            (
+                normalized
+                for raw_position in (row.get("position"), row.get("ngs_position"))
+                if (normalized := _normalize_position(raw_position)) is not None
+            ),
+            None,
+        )
+        if player_id and position:
+            database_positions[player_id] = position
     matched = player_ids.intersection(database_positions)
     LOG.info(
         "nflreadpy player database supplied positions for %s/%s observed IDs (%.1f%%)",
@@ -277,15 +280,24 @@ def _load_nflreadpy_positions(player_ids: set[str]) -> dict[str, str]:
     return {player_id: database_positions[player_id] for player_id in matched}
 
 
-def _position_group(position: str | None) -> str:
-    """Map the player's roster position independent of which side listed the player."""
-    if not position:
-        return "UNK"
+def _normalize_position(position: str | None) -> str | None:
+    if position is None or pd.isna(position):
+        return None
     normalized = re.sub(r"[^A-Z]", "", str(position).upper())
     for group, positions in POSITION_GROUPS.items():
         if normalized in positions:
-            return group
-    return "UNK"
+            return normalized
+    return None
+
+
+def _position_group(position: str | None) -> str:
+    """Map a recognized roster position independent of which side listed the player."""
+    normalized = _normalize_position(position)
+    if normalized is None:
+        return "UNK"
+    return next(
+        group for group, positions in POSITION_GROUPS.items() if normalized in positions
+    )
 
 
 def _load_offense_positions(
@@ -456,12 +468,24 @@ def _make_position_maps(
     user_season: dict[tuple[str, str], str],
     nflreadpy_positions: dict[str, str],
 ) -> tuple[dict[str, str], dict[tuple[str, str], str], dict[str, str]]:
-    offense_positions = dict(nflreadpy_positions)
-    offense_positions.update(rusher_positions)
-    offense_positions.update(user_global)
-    defense_position_map = dict(nflreadpy_positions)
-    defense_position_map.update(defense_positions)
-    return offense_positions, dict(user_season), defense_position_map
+    def recognized_positions(source: dict[str, str]) -> dict[str, str]:
+        return {
+            player_id: normalized
+            for player_id, position in source.items()
+            if (normalized := _normalize_position(position)) is not None
+        }
+
+    offense_positions = recognized_positions(nflreadpy_positions)
+    offense_positions.update(recognized_positions(rusher_positions))
+    offense_positions.update(recognized_positions(user_global))
+    defense_position_map = recognized_positions(nflreadpy_positions)
+    defense_position_map.update(recognized_positions(defense_positions))
+    season_position_map = {
+        key: normalized
+        for key, position in user_season.items()
+        if (normalized := _normalize_position(position)) is not None
+    }
+    return offense_positions, season_position_map, defense_position_map
 
 
 def _player_position(
@@ -1556,6 +1580,23 @@ def _run_selftest() -> None:
     expected = {10: 10, 15: 15, 23: 17, 55: 25, -18: -15.75, -40: -21.25}
     for value, result in expected.items():
         assert normalize_yards(value) == result, (value, normalize_yards(value), result)
+    offense, season_positions, defense = _make_position_maps(
+        {"known": "UNK"},
+        {"known": "UNK"},
+        {"known": "UNK"},
+        {("2024", "known"): "UNK"},
+        {"known": "RB"},
+    )
+    assert (
+        _player_position("known", "2024", "offense", offense, season_positions, defense)
+        == "RB"
+    )
+    assert (
+        _player_position("known", "2024", "defense", offense, season_positions, defense)
+        == "RB"
+    )
+    assert _position_group("RB") == "RB"
+    assert _position_group("UNK") == "UNK"
     seed = 731
     rng = np.random.default_rng(seed)
     n_games, plays_per_game, n_teams = 60, 500, 24

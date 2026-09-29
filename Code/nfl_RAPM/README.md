@@ -22,13 +22,14 @@ positions, and charting fields; and offense/defense player IDs and names.
 loader handles those fields as optional: without rusher IDs it cannot create
 ball-carrier estimates, and without `posteam` it cannot orient a running score
 differential or reliably label player teams. Player positions are looked up by
-GSIS ID from `nflreadpy.load_players()`; observed defensive position labels,
+GSIS ID from `nflreadpy.load_players()`; recognized defensive position labels,
 rusher positions, and explicit `--positions` entries take precedence over the
-database fallback. On the current 2025 team CSV player IDs, the database lookup
-covered all observed IDs. Position groups follow the player's roster position
-even if a participation row lists them on the opposite side; shrinkage/ranking
-groups still include side and role. K, P, and LS positions are shown as `SPEC`
-rather than `UNK`.
+database fallback. Blank or unrecognized labels (including `UNK`) do not replace
+a recognized database position. On the current 2025 team CSV player IDs, the
+database lookup covered all observed IDs. Position groups follow the player's
+roster position even if a participation row lists them on the opposite side;
+shrinkage/ranking groups still include side and role. K, P, and LS positions
+are shown as `SPEC` rather than `UNK`.
 
 ## Run the analysis
 
