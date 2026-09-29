@@ -25,7 +25,10 @@ differential or reliably label player teams. Player positions are looked up by
 GSIS ID from `nflreadpy.load_players()`; observed defensive position labels,
 rusher positions, and explicit `--positions` entries take precedence over the
 database fallback. On the current 2025 team CSV player IDs, the database lookup
-covered all observed IDs.
+covered all observed IDs. Position groups follow the player's roster position
+even if a participation row lists them on the opposite side; shrinkage/ranking
+groups still include side and role. K, P, and LS positions are shown as `SPEC`
+rather than `UNK`.
 
 ## Run the analysis
 

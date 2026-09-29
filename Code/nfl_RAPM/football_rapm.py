@@ -43,6 +43,7 @@ POSITION_GROUPS = {
     "DL": {"DE", "DT", "NT", "EDGE", "DL", "LE", "RE"},
     "LB": {"OLB", "ILB", "MLB", "LB"},
     "DB": {"CB", "S", "FS", "SS", "DB", "SAF"},
+    "SPEC": {"K", "P", "LS"},
 }
 
 
@@ -276,15 +277,12 @@ def _load_nflreadpy_positions(player_ids: set[str]) -> dict[str, str]:
     return {player_id: database_positions[player_id] for player_id in matched}
 
 
-def _position_group(position: str | None, side: str) -> str:
+def _position_group(position: str | None) -> str:
+    """Map the player's roster position independent of which side listed the player."""
     if not position:
         return "UNK"
     normalized = re.sub(r"[^A-Z]", "", str(position).upper())
     for group, positions in POSITION_GROUPS.items():
-        if side == "defense" and group not in {"DL", "LB", "DB"}:
-            continue
-        if side == "offense" and group in {"DL", "LB", "DB"}:
-            continue
         if normalized in positions:
             return group
     return "UNK"
@@ -529,7 +527,7 @@ def _make_design(
                     season_positions,
                     defense_positions,
                 )
-                group = _position_group(position, side)
+                group = _position_group(position)
                 player_metadata.setdefault(
                     column,
                     {
@@ -557,7 +555,7 @@ def _make_design(
                     {
                         "player_id": carrier_id,
                         "player_name": names.get(carrier_id, ""),
-                        "position_group": _position_group(position, side),
+                        "position_group": _position_group(position),
                         "season": season if by_season else "",
                     },
                 )
