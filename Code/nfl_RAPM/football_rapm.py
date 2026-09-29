@@ -1,4 +1,4 @@
-push"""Estimate yards-only football RAPM ratings from play-by-play CSV files."""
+"""Estimate yards-only football RAPM ratings from play-by-play CSV files."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 import numpy as np
 import pandas as pd
@@ -64,6 +64,8 @@ class FitResult:
     passes: int
     largest_change: float
     bootstrap: dict[tuple[str, str, str], tuple[float, float]]
+    joint_coefficients: np.ndarray
+    group_priors_enabled: bool
 
 
 def normalize_yards(yards: float, cap: float = 15.0, shrink: float = 0.25) -> float:
@@ -236,6 +238,44 @@ def load_plays(input_value: str) -> tuple[pd.DataFrame, dict[str, str], dict[str
     return data, best_names, best_defense_positions, best_rusher_positions
 
 
+def _load_nflreadpy_positions(player_ids: set[str]) -> dict[str, str]:
+    """Map observed GSIS IDs to primary positions using nflreadpy's player database."""
+    import nflreadpy as nfl
+
+    players = nfl.load_players()
+    required = {"gsis_id", "position"}
+    missing = required.difference(players.columns)
+    if missing:
+        raise ValueError(
+            "nflreadpy player database is missing required columns: "
+            + ", ".join(sorted(missing))
+        )
+    selected_columns = ["gsis_id", "position"]
+    if "ngs_position" in players.columns:
+        selected_columns.append("ngs_position")
+    database_positions: dict[str, str] = {}
+    for row in players.select(selected_columns).to_dicts():
+        raw_id = row.get("gsis_id")
+        if raw_id is None or pd.isna(raw_id):
+            continue
+        player_id = str(raw_id).strip()
+        raw_position = row.get("position")
+        if raw_position is None or pd.isna(raw_position) or not str(raw_position).strip():
+            raw_position = row.get("ngs_position")
+        if raw_position is not None and not pd.isna(raw_position):
+            position = str(raw_position).strip().upper()
+            if player_id and position:
+                database_positions[player_id] = position
+    matched = player_ids.intersection(database_positions)
+    LOG.info(
+        "nflreadpy player database supplied positions for %s/%s observed IDs (%.1f%%)",
+        f"{len(matched):,}",
+        f"{len(player_ids):,}",
+        100 * len(matched) / len(player_ids) if player_ids else 100.0,
+    )
+    return {player_id: database_positions[player_id] for player_id in matched}
+
+
 def _position_group(position: str | None, side: str) -> str:
     if not position:
         return "UNK"
@@ -368,13 +408,15 @@ def clean_plays(
     _print_data_checks(data)
     play_type = data["play_type"].fillna("").str.strip().str.lower()
     keep_type = play_type.isin({"run", "rush", "pass"})
+    missing_play_type = data["play_type"].isna() | play_type.eq("")
     yards = pd.to_numeric(data["yards_gained"], errors="coerce")
     has_yards = yards.notna() & np.isfinite(yards)
     has_players = data["offense_player_ids"].map(lambda value: bool(_list_values(value))) & data[
         "defense_player_ids"
     ].map(lambda value: bool(_list_values(value)))
     dropped = {
-        "non_run_pass_or_missing_type": int((~keep_type).sum()),
+        "missing_play_type": int(missing_play_type.sum()),
+        "unsupported_play_type": int((~keep_type & ~missing_play_type).sum()),
         "missing_or_nonfinite_yards": int((keep_type & ~has_yards).sum()),
         "missing_player_lists": int((keep_type & has_yards & ~has_players).sum()),
     }
@@ -414,10 +456,14 @@ def _make_position_maps(
     rusher_positions: dict[str, str],
     user_global: dict[str, str],
     user_season: dict[tuple[str, str], str],
+    nflreadpy_positions: dict[str, str],
 ) -> tuple[dict[str, str], dict[tuple[str, str], str], dict[str, str]]:
-    offense_positions = dict(rusher_positions)
+    offense_positions = dict(nflreadpy_positions)
+    offense_positions.update(rusher_positions)
     offense_positions.update(user_global)
-    return offense_positions, dict(user_season), dict(defense_positions)
+    defense_position_map = dict(nflreadpy_positions)
+    defense_position_map.update(defense_positions)
+    return offense_positions, dict(user_season), defense_position_map
 
 
 def _player_position(
@@ -720,8 +766,9 @@ def _ridge_fit(
     design: sparse.csr_matrix,
     target: np.ndarray,
     alpha: float,
+    fit_intercept: bool = True,
 ) -> tuple[np.ndarray, float]:
-    estimator = Ridge(alpha=float(alpha), fit_intercept=True, solver="lsqr")
+    estimator = Ridge(alpha=float(alpha), fit_intercept=fit_intercept, solver="lsqr")
     estimator.fit(design, target)
     return np.asarray(estimator.coef_).ravel(), float(estimator.intercept_)
 
@@ -771,7 +818,11 @@ def _intercept_cv_rmse(target: np.ndarray, frame: pd.DataFrame, folds: int) -> f
     return math.sqrt(squared_error / observations) if observations else float("nan")
 
 
-def _group_means(coefficients: np.ndarray, counts: np.ndarray, group_keys: Sequence[tuple[str, str, str]]) -> np.ndarray:
+def _group_means(
+    coefficients: np.ndarray,
+    counts: np.ndarray,
+    group_keys: Sequence[tuple[str, str, str]],
+) -> np.ndarray:
     accum: defaultdict[tuple[str, str, str], list[float]] = defaultdict(lambda: [0.0, 0.0])
     for beta, count, group in zip(coefficients, counts, group_keys):
         accum[group][0] += float(beta) * float(count)
@@ -781,6 +832,125 @@ def _group_means(coefficients: np.ndarray, counts: np.ndarray, group_keys: Seque
         for group, (total, count) in accum.items()
     }
     return np.asarray([means[group] for group in group_keys], dtype=float)
+
+
+def _alternate_sides(
+    design: sparse.csr_matrix,
+    target: np.ndarray,
+    baseline: np.ndarray,
+    columns: Sequence[tuple[str, str, str]],
+    counts: np.ndarray,
+    group_keys: Sequence[tuple[str, str, str]],
+    alpha: float,
+    max_passes: int,
+    tolerance: float,
+    group_priors: bool,
+    initial_coefficients: np.ndarray | None = None,
+    log_name: str = "fit",
+    cv_rmse: float = float("nan"),
+    baseline_refit: Callable[[np.ndarray, int], np.ndarray] | None = None,
+    log_iterations: bool = True,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, int, float]:
+    """Alternate offense and defense ridge blocks using one fixed penalty."""
+    sides = np.asarray([column[0] for column in columns])
+    offense_indices = np.flatnonzero(sides == "offense")
+    defense_indices = np.flatnonzero(sides == "defense")
+    offense = design[:, offense_indices].tocsr()
+    defense = design[:, defense_indices].tocsr()
+    offense_counts = counts[offense_indices]
+    defense_counts = counts[defense_indices]
+    offense_groups = [group_keys[index] for index in offense_indices]
+    defense_groups = [group_keys[index] for index in defense_indices]
+    coefficients = (
+        np.zeros(design.shape[1], dtype=float)
+        if initial_coefficients is None
+        else np.asarray(initial_coefficients, dtype=float).copy()
+    )
+    offense_beta = coefficients[offense_indices].copy()
+    defense_beta = coefficients[defense_indices].copy()
+    offense_prior = (
+        _group_means(offense_beta, offense_counts, offense_groups)
+        if group_priors
+        else np.zeros(len(offense_indices), dtype=float)
+    )
+    defense_prior = (
+        _group_means(defense_beta, defense_counts, defense_groups)
+        if group_priors
+        else np.zeros(len(defense_indices), dtype=float)
+    )
+    previous_offense_deviation: np.ndarray | None = None
+    previous_defense_deviation: np.ndarray | None = None
+    largest_change = float("inf")
+    passes = 0
+    for pass_number in range(max_passes):
+        offense_residual = (
+            target
+            - baseline
+            - np.asarray(defense @ defense_beta).ravel()
+            - np.asarray(offense @ offense_prior).ravel()
+        )
+        offense_deviation, _ = _ridge_fit(
+            offense, offense_residual, alpha, fit_intercept=False
+        )
+        offense_beta = offense_prior + offense_deviation
+        if group_priors:
+            offense_prior = _group_means(offense_beta, offense_counts, offense_groups)
+        else:
+            offense_prior.fill(0.0)
+
+        defense_residual = (
+            target
+            - baseline
+            - np.asarray(offense @ offense_beta).ravel()
+            - np.asarray(defense @ defense_prior).ravel()
+        )
+        defense_deviation, _ = _ridge_fit(
+            defense, defense_residual, alpha, fit_intercept=False
+        )
+        defense_beta = defense_prior + defense_deviation
+        if group_priors:
+            defense_prior = _group_means(defense_beta, defense_counts, defense_groups)
+        else:
+            defense_prior.fill(0.0)
+
+        offense_deviation = offense_beta - offense_prior
+        defense_deviation = defense_beta - defense_prior
+        changes: list[float] = []
+        if previous_offense_deviation is not None and len(offense_deviation):
+            changes.append(
+                float(np.max(np.abs(offense_deviation - previous_offense_deviation)))
+            )
+        if previous_defense_deviation is not None and len(defense_deviation):
+            changes.append(
+                float(np.max(np.abs(defense_deviation - previous_defense_deviation)))
+            )
+        largest_change = max(changes) if changes else float("inf")
+        passes = pass_number + 1
+        if log_iterations:
+            LOG.info(
+                "%s pass %d (offense/defense alternation): lambda=%.5g CV RMSE=%.4f "
+                "largest deviation change=%.6f",
+                log_name,
+                passes + 1,
+                alpha,
+                cv_rmse,
+                largest_change,
+            )
+        previous_offense_deviation = offense_deviation.copy()
+        previous_defense_deviation = defense_deviation.copy()
+        coefficients[offense_indices] = offense_beta
+        coefficients[defense_indices] = defense_beta
+        if baseline_refit is not None:
+            residual = target - np.asarray(design @ coefficients).ravel()
+            baseline = baseline_refit(residual, pass_number)
+        if passes > 1 and largest_change < tolerance:
+            break
+    coefficients[offense_indices] = offense_beta
+    coefficients[defense_indices] = defense_beta
+    targets = np.zeros_like(coefficients)
+    targets[offense_indices] = offense_prior
+    targets[defense_indices] = defense_prior
+    return coefficients, targets, baseline, passes, largest_change
 
 
 def fit_model(
@@ -798,104 +968,87 @@ def fit_model(
     group_priors: bool,
     seed: int,
 ) -> FitResult:
-    """Fit one of the three supported play selections with iterative baselines."""
+    """Fit one joint ridge model, then alternate offense/defense blocks."""
     y = frame["yards"].to_numpy(dtype=float)
-    baseline = _initial_type_mean(y, frame)
-    baseline_target = y.copy()
-    prior = np.zeros(design.shape[1], dtype=float)
-    previous_deviation: np.ndarray | None = None
+    initial_baseline = _initial_type_mean(y, frame)
     alpha = float(lambdas[len(lambdas) // 2])
-    final_cv = float("nan")
-    largest_change = float("inf")
     intercept_rmse = _intercept_cv_rmse(y, frame, folds)
-    baseline_rmse = float("nan")
-    passes = 0
     baseline_only = _baseline_predictions(features, y, frame, folds, seed)
     baseline_rmse = float(np.sqrt(np.mean(np.square(y - baseline_only))))
-    for pass_number in range(max_passes):
-        validation_baselines = _nested_cv_baselines(
-            features,
-            baseline_target,
-            frame,
-            folds,
-            seed + pass_number * 100,
-            type_means_only=pass_number == 0,
+    validation_baselines = _nested_cv_baselines(
+        features, y, frame, folds, seed, type_means_only=True
+    )
+    cv_scores = [
+        _cross_validated_rmse(
+            design, y, np.zeros(design.shape[1]), validation_baselines, candidate
         )
-        if pass_number < 2:
-            scores = [
-                _cross_validated_rmse(
-                    design, y, prior, validation_baselines, candidate
-                )
-                for candidate in lambdas
-            ]
-            finite = [(score, candidate) for score, candidate in zip(scores, lambdas) if np.isfinite(score)]
-            if finite:
-                final_cv, alpha = min(finite)
-                if alpha in {float(lambdas[0]), float(lambdas[-1])}:
-                    LOG.warning(
-                        "%s pass %d selected an edge lambda (%.5g); consider widening --lambda-grid",
-                        name,
-                        pass_number + 1,
-                        alpha,
-                    )
-            else:
-                LOG.warning("%s: game-grouped CV unavailable; using lambda %.4g", name, alpha)
-                final_cv = float("nan")
-        residual = y - baseline - np.asarray(design @ prior).ravel()
-        deviations, _ = _ridge_fit(design, residual, alpha)
-        coefficients = prior + deviations
-        if group_priors:
-            next_prior = _group_means(coefficients, counts, group_keys)
-        else:
-            next_prior = np.zeros_like(prior)
-        next_deviation = coefficients - next_prior
-        largest_change = (
-            float(np.max(np.abs(next_deviation - previous_deviation)))
-            if previous_deviation is not None and len(next_deviation)
-            else float("inf")
-        )
-        passes = pass_number + 1
-        LOG.info(
-            "%s pass %d: lambda=%.5g CV RMSE=%.4f largest deviation change=%.6f",
+        for candidate in lambdas
+    ]
+    finite_scores = [
+        (score, float(candidate))
+        for score, candidate in zip(cv_scores, lambdas)
+        if np.isfinite(score)
+    ]
+    if finite_scores:
+        final_cv, alpha = min(finite_scores)
+    else:
+        final_cv = float("nan")
+        LOG.warning("%s: grouped CV unavailable; using lambda %.5g", name, alpha)
+    if alpha in {float(lambdas[0]), float(lambdas[-1])}:
+        LOG.warning(
+            "%s selected an edge lambda (%.5g); consider widening --lambda-grid",
             name,
-            passes,
             alpha,
-            final_cv,
-            largest_change,
         )
-        partial_residual = y - np.asarray(design @ coefficients).ravel()
-        baseline_target = partial_residual
-        baseline = _baseline_predictions(features, partial_residual, frame, folds, seed + pass_number)
-        prior = next_prior
-        previous_deviation = next_deviation
-        if pass_number > 0 and largest_change < tolerance:
-            break
-    # The coefficients above used the previous baseline/prior; refit once against the
-    # final out-of-fold baseline and the final group targets before reporting.
-    residual = y - baseline - np.asarray(design @ prior).ravel()
-    deviations, _ = _ridge_fit(design, residual, alpha)
-    coefficients = prior + deviations
-    final_validation_baselines = _nested_cv_baselines(
-        features,
-        baseline_target,
-        frame,
-        folds,
-        seed + max_passes * 100,
-        type_means_only=False,
+    joint_deviations, joint_intercept = _ridge_fit(
+        design, y - initial_baseline, alpha, fit_intercept=True
     )
-    full_cv = _cross_validated_rmse(
-        design, y, prior, final_validation_baselines, alpha
+    joint_coefficients = joint_deviations.copy()
+    baseline = initial_baseline + joint_intercept
+    LOG.info(
+        "%s pass 1 (joint fit): lambda=%.5g CV RMSE=%.4f largest deviation change=n/a",
+        name,
+        alpha,
+        final_cv,
     )
+    if max_passes > 1:
+        def refit_baseline(residual: np.ndarray, pass_number: int) -> np.ndarray:
+            return _baseline_predictions(
+                features, residual, frame, folds, seed + pass_number + 1
+            )
+
+        coefficients, targets, baseline, alternations, largest_change = _alternate_sides(
+            design,
+            y,
+            baseline,
+            columns,
+            counts,
+            group_keys,
+            alpha,
+            max_passes - 1,
+            tolerance,
+            group_priors,
+            initial_coefficients=joint_coefficients,
+            log_name=name,
+            cv_rmse=final_cv,
+            baseline_refit=refit_baseline,
+        )
+    else:
+        coefficients = joint_coefficients
+        targets = np.zeros_like(coefficients)
+        alternations = 0
+        largest_change = float("inf")
+    passes = 1 + alternations
     return FitResult(
         name=name,
         frame=frame,
         columns=columns,
         coefficients=coefficients,
         counts=counts,
-        group_targets=prior,
+        group_targets=targets,
         group_keys=group_keys,
         lambda_value=alpha,
-        cv_rmse=full_cv if np.isfinite(full_cv) else final_cv,
+        cv_rmse=final_cv,
         intercept_rmse=intercept_rmse,
         baseline_rmse=baseline_rmse,
         baseline=baseline,
@@ -903,6 +1056,8 @@ def fit_model(
         passes=passes,
         largest_change=largest_change,
         bootstrap={},
+        joint_coefficients=joint_coefficients,
+        group_priors_enabled=group_priors,
     )
 
 
@@ -924,13 +1079,22 @@ def _bootstrap_fit(
         target = result.frame["yards"].to_numpy(dtype=float)[rows]
         matrix = result.design[rows]
         baseline = result.baseline[rows]
-        prior = result.group_targets
-        centered = target - baseline - np.asarray(matrix @ prior).ravel()
-        beta, _ = _ridge_fit(matrix, centered, result.lambda_value)
-        full = prior + beta
         sampled_counts = np.asarray((matrix != 0).sum(axis=0)).ravel().astype(float)
-        means = _group_means(full, sampled_counts, result.group_keys)
-        for index, estimate in enumerate(full - means):
+        full, targets, _, _, _ = _alternate_sides(
+            matrix,
+            target,
+            baseline,
+            result.columns,
+            sampled_counts,
+            result.group_keys,
+            result.lambda_value,
+            max_passes=6,
+            tolerance=0.005,
+            group_priors=result.group_priors_enabled,
+            log_name=f"{result.name} bootstrap",
+            log_iterations=False,
+        )
+        for index, estimate in enumerate(full - targets):
             estimates[index].append(float(estimate))
     return {
         result.columns[index]: tuple(np.percentile(values, [10, 90]).astype(float))
@@ -942,14 +1106,13 @@ def _bootstrap_fit(
 def _format_outputs(
     result: FitResult, metadata: dict[tuple[str, str, str], dict[str, str]]
 ) -> pd.DataFrame:
-    reporting_means = _group_means(result.coefficients, result.counts, result.group_keys)
     rows: list[dict[str, object]] = []
     for index, (side, role, player_key) in enumerate(result.columns):
         if side == "defense" and role != "on_field":
             continue
         player = metadata[(side, role, player_key)]
         group = player["position_group"]
-        deviation = float(result.coefficients[index] - reporting_means[index])
+        deviation = float(result.coefficients[index] - result.group_targets[index])
         q10, q90 = result.bootstrap.get((side, role, player_key), (np.nan, np.nan))
         rows.append(
             {
@@ -1064,34 +1227,37 @@ def _make_qb_view(
 
 
 def _print_leaderboards(outputs: dict[str, pd.DataFrame], min_plays: int, min_carries: int) -> None:
-    pooled = outputs["rapm_all_plays"]
-    if pooled.empty:
-        return
-    for (side, role, group), subset in pooled.groupby(["side", "role", "position_group"]):
-        threshold = min_carries if role == "ball_carrier" else min_plays
-        qualified = subset[subset["n_plays"] >= threshold].sort_values(
-            "rapm_vs_group_avg", ascending=False
-        )
-        if qualified.empty:
+    for fit_name, table in outputs.items():
+        if table.empty:
             continue
-        LOG.info(
-            "\n%s %s %s leaderboard (minimum %d plays)",
-            side.upper(),
-            role,
-            group,
-            threshold,
-        )
-        print(
-            qualified.head(15)[
-                ["player_name", "player_id", "team", "n_plays", "rapm_vs_group_avg"]
-            ].to_string(index=False)
-        )
-        LOG.info("%s %s %s bottom 15", side.upper(), role, group)
-        print(
-            qualified.tail(15).sort_values("rapm_vs_group_avg")[
-                ["player_name", "player_id", "team", "n_plays", "rapm_vs_group_avg"]
-            ].to_string(index=False)
-        )
+        for (side, role, group), subset in table.groupby(
+            ["side", "role", "position_group"]
+        ):
+            threshold = min_carries if role == "ball_carrier" else min_plays
+            qualified = subset[subset["n_plays"] >= threshold].sort_values(
+                "rapm_vs_group_avg", ascending=False
+            )
+            if qualified.empty:
+                continue
+            LOG.info(
+                "\n%s | %s %s %s leaderboard (minimum %d plays)",
+                fit_name,
+                side.upper(),
+                role,
+                group,
+                threshold,
+            )
+            print(
+                qualified.head(15)[
+                    ["player_name", "player_id", "team", "n_plays", "rapm_vs_group_avg"]
+                ].to_string(index=False)
+            )
+            LOG.info("%s | %s %s %s bottom 15", fit_name, side.upper(), role, group)
+            print(
+                qualified.tail(15).sort_values("rapm_vs_group_avg")[
+                    ["player_name", "player_id", "team", "n_plays", "rapm_vs_group_avg"]
+                ].to_string(index=False)
+            )
 
 
 def _split_half_reliability(
@@ -1109,12 +1275,22 @@ def _split_half_reliability(
         rows = np.flatnonzero(result.frame["game_id"].astype(str).isin(half).to_numpy())
         matrix = result.design[rows]
         y = result.frame["yards"].to_numpy(dtype=float)[rows]
-        centered = y - result.baseline[rows] - np.asarray(matrix @ result.group_targets).ravel()
-        beta, _ = _ridge_fit(matrix, centered, result.lambda_value)
-        coefficients = result.group_targets + beta
         counts = np.asarray((matrix != 0).sum(axis=0)).ravel().astype(float)
-        means = _group_means(coefficients, counts, result.group_keys)
-        deviations.append(coefficients - means)
+        coefficients, targets, _, _, _ = _alternate_sides(
+            matrix,
+            y,
+            result.baseline[rows],
+            result.columns,
+            counts,
+            result.group_keys,
+            result.lambda_value,
+            max_passes=6,
+            tolerance=0.005,
+            group_priors=result.group_priors_enabled,
+            log_name=f"{result.name} split-half",
+            log_iterations=False,
+        )
+        deviations.append(coefficients - targets)
         counts_by_half.append(counts)
     reliability: dict[tuple[str, str, str], float] = {}
     groups = sorted(set(result.group_keys))
@@ -1142,6 +1318,18 @@ def _write_diagnostics(
         f"Rows after de-duplication: {len(data):,}",
         f"Games: {data['game_id'].nunique():,}",
         f"Seasons: {', '.join(sorted(data['season'].dropna().astype(str).unique()))}",
+        "Teams: "
+        + ", ".join(
+            sorted(
+                {
+                    str(team).strip()
+                    for column in ("team", "posteam", "opponent")
+                    if column in data
+                    for team in data[column].dropna().unique()
+                    if str(team).strip()
+                }
+            )
+        ),
         "Drop counts: " + ", ".join(f"{key}={value:,}" for key, value in dropped.items()),
         "Starting/ending yardage absolute-distance mismatch rate (1-yard tolerance): "
         + (f"{yardage_mismatch_rate:.4%}" if np.isfinite(yardage_mismatch_rate) else "unavailable"),
@@ -1157,16 +1345,25 @@ def _write_diagnostics(
                 f"Chosen lambda: {result.lambda_value:g}",
                 f"CV RMSE (intercept-only): {result.intercept_rmse:.6f}",
                 f"CV RMSE (baseline-only): {result.baseline_rmse:.6f}",
-                f"CV RMSE (full model): {result.cv_rmse:.6f}",
+                f"CV RMSE (full model, pass-1 joint fit): {result.cv_rmse:.6f}",
                 f"Passes: {result.passes}",
                 f"Largest within-group deviation change: {result.largest_change:.8f}",
             ]
         )
-        group_stats: defaultdict[tuple[str, str, str], list[float]] = defaultdict(list)
-        for coefficient, group in zip(result.coefficients, result.group_keys):
-            group_stats[group].append(float(coefficient))
+        coefficient_stats: defaultdict[tuple[str, str, str], list[float]] = defaultdict(list)
+        deviation_stats: defaultdict[tuple[str, str, str], list[float]] = defaultdict(list)
+        for coefficient, group_target, group in zip(
+            result.coefficients, result.group_targets, result.group_keys
+        ):
+            coefficient_stats[group].append(float(coefficient))
+            deviation_stats[group].append(float(coefficient - group_target))
         lines.append("Coefficient mean and SD by group:")
-        for group, values in sorted(group_stats.items()):
+        for group, values in sorted(coefficient_stats.items()):
+            lines.append(
+                f"  {group}: mean={np.mean(values):.6f}, sd={np.std(values):.6f}, n={len(values)}"
+            )
+        lines.append("Within-group deviation mean and SD:")
+        for group, values in sorted(deviation_stats.items()):
             lines.append(
                 f"  {group}: mean={np.mean(values):.6f}, sd={np.std(values):.6f}, n={len(values)}"
             )
@@ -1177,8 +1374,50 @@ def _write_diagnostics(
     (outdir / "diagnostics.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _play_expectations(result: FitResult) -> pd.DataFrame:
+    """Return side-specific expectations and residuals for each modeled play."""
+    sides = np.asarray([column[0] for column in result.columns])
+    offense_columns = np.flatnonzero(sides == "offense")
+    defense_columns = np.flatnonzero(sides == "defense")
+    offense_contribution = np.asarray(
+        result.design[:, offense_columns] @ result.coefficients[offense_columns]
+    ).ravel()
+    defense_contribution = np.asarray(
+        result.design[:, defense_columns] @ result.coefficients[defense_columns]
+    ).ravel()
+    actual = result.frame["yards"].to_numpy(dtype=float)
+    output = pd.DataFrame(
+        {
+            "fit": result.name,
+            "game_id": result.frame["game_id"].astype(str),
+            "play_id": result.frame["play_id"].astype(str),
+            "play_type": result.frame["play_type"].astype(str),
+            "actual_yards_gained": result.frame["raw_yards"].to_numpy(dtype=float),
+            "normalized_yards": actual,
+            "offense_expectation": result.baseline + defense_contribution,
+            "defense_expectation": result.baseline + offense_contribution,
+            "offense_residual": actual - result.baseline - defense_contribution,
+            "defense_residual": result.baseline
+            + offense_contribution
+            - actual,
+        }
+    )
+    return output
+
+
 def run_analysis(args: argparse.Namespace) -> None:
     data, names, defender_positions, rusher_positions = load_plays(args.input)
+    observed_player_ids = {
+        player_id
+        for column in ("offense_player_ids", "defense_player_ids")
+        for value in data[column]
+        for player_id in _list_values(value)
+    }
+    nflreadpy_positions = (
+        _load_nflreadpy_positions(observed_player_ids)
+        if not args.no_nflreadpy_positions
+        else {}
+    )
     score_running = _score_is_running(data)
     cleaned, dropped, yardage_mismatch_rate = clean_plays(
         data, args.cap, args.shrink, score_running
@@ -1187,7 +1426,11 @@ def run_analysis(args: argparse.Namespace) -> None:
         raise ValueError("--by-season requires a season column or derivable season in game_id")
     offense_global, offense_season = _load_offense_positions(args.positions)
     offense_positions, season_positions, defense_position_map = _make_position_maps(
-        defender_positions, rusher_positions, offense_global, offense_season
+        defender_positions,
+        rusher_positions,
+        offense_global,
+        offense_season,
+        nflreadpy_positions,
     )
     lambda_grid = args.lambda_grid
     if not lambda_grid or any(value <= 0 for value in lambda_grid):
@@ -1206,6 +1449,7 @@ def run_analysis(args: argparse.Namespace) -> None:
             result = FitResult(
                 name, frame, [], np.zeros(0), np.zeros(0), np.zeros(0), [], float(lambda_grid[0]),
                 float("nan"), float("nan"), float("nan"), np.zeros(0), design, 0, 0.0, {},
+                np.zeros(0), not args.no_group_priors,
             )
         else:
             design, columns, groups, counts, fit_metadata = _make_design(
@@ -1269,6 +1513,12 @@ def run_analysis(args: argparse.Namespace) -> None:
                 output[column] = pd.Series(dtype=float)
         output[columns].to_csv(outdir / f"{name}.csv", index=False)
         outputs[name] = output
+    if args.export_expectations:
+        expectations = pd.concat(
+            [_play_expectations(result) for result in results if not result.frame.empty],
+            ignore_index=True,
+        )
+        expectations.to_csv(outdir / "play_expectations.csv", index=False)
     qb_view = _make_qb_view(
         result_by_name["rapm_pass"],
         result_by_name["rapm_rush"],
@@ -1473,8 +1723,47 @@ def _run_selftest() -> None:
         seed=seed,
     )
     assert np.array_equal(pooled.coefficients, repeat.coefficients), "fixed-seed fit did not reproduce"
+    pooled_y = pooled.frame["yards"].to_numpy(dtype=float)
+    initial_baseline = _initial_type_mean(pooled_y, pooled.frame)
+    joint_coefficients, joint_intercept = _ridge_fit(
+        design,
+        pooled_y - initial_baseline,
+        pooled.lambda_value,
+        fit_intercept=True,
+    )
+    fixed_baseline = initial_baseline + joint_intercept
+    alternating, _, _, equivalence_passes, _ = _alternate_sides(
+        design,
+        pooled_y,
+        fixed_baseline,
+        columns,
+        counts,
+        groups,
+        pooled.lambda_value,
+        max_passes=40,
+        tolerance=0.001,
+        group_priors=False,
+        initial_coefficients=joint_coefficients,
+        log_name="equivalence self-test",
+    )
+    observed = counts >= 30
+    equivalence_correlation = float(
+        np.corrcoef(joint_coefficients[observed], alternating[observed])[0, 1]
+    )
+    assert equivalence_passes > 1, "block alternation converged without an update"
+    assert equivalence_correlation > 0.98, (
+        "joint and alternating ridge coefficients diverged: "
+        f"{equivalence_correlation:.3f}"
+    )
+    print(
+        "Joint/alternating coefficient correlation: "
+        f"{equivalence_correlation:.4f} after {equivalence_passes} block passes."
+    )
     assert all(np.isfinite(result.coefficients).all() for result in results_by_kind.values())
-    print("Self-test passed: yard normalization, three fits, and offense/defense sign recovery.")
+    print(
+        "Self-test passed: normalization, three fits, sign recovery, reproducibility, "
+        "and joint/alternating equivalence."
+    )
 
 
 def _parse_lambda_grid(value: str) -> list[float]:
@@ -1504,6 +1793,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input", help="CSV path, glob pattern, or directory containing CSVs")
     parser.add_argument("--outdir", default="rapm_output", help="Output directory")
     parser.add_argument("--positions", help="Optional offense player position CSV")
+    parser.add_argument(
+        "--no-nflreadpy-positions",
+        action="store_true",
+        help="Do not enrich player positions from nflreadpy.load_players()",
+    )
     parser.add_argument("--by-season", action="store_true", help="Estimate separate player-season effects")
     parser.add_argument("--cap", type=float, default=15.0, help="Yardage cap threshold (default: 15)")
     parser.add_argument("--shrink", type=float, default=0.25, help="Beyond-cap shrink factor (default: 0.25)")
@@ -1521,6 +1815,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-plays", type=int, default=100)
     parser.add_argument("--min-carries", type=int, default=30)
     parser.add_argument("--bootstrap", type=int, default=0, help="Game-cluster bootstrap replicates")
+    parser.add_argument(
+        "--export-expectations",
+        action="store_true",
+        help="Write per-play expectations and performance residuals for the three fits",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--selftest", action="store_true", help="Run the simulated-data self-test")
     return parser
