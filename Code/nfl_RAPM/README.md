@@ -100,6 +100,34 @@ play-count columns for each player's matching side and role; a blank component
 means the player had no observations in that play-type fit. Leaderboards are
 printed to the console.
 
+## Aggregate existing seasons
+
+To combine existing season exports without rerunning the play-level regression,
+use `aggregate_rapm_years.py`. It reads `rapm_all_plays.csv` from each
+`rapm_[YEAR]` folder and supports an inclusive year range:
+
+```sh
+python3 Code/nfl_RAPM/aggregate_rapm_years.py \
+  --input-root . \
+  --start-year 2018 \
+  --end-year 2025 \
+  --outdir rapm_multi_year
+```
+
+The aggregator emits one `final_RAPM` per player, using only that player's
+primary side (the side with more observed plays across supplied seasons). It
+never adds offensive and defensive ratings; any opposite-side records are
+excluded from the final value and reported in diagnostic columns. It prints the
+weighting formula and an auditable worked example before writing files. Use
+`--preview-only` to inspect the formula without creating outputs. Results include
+the player-level CSV, season-by-season calculations, examples, input diagnostics,
+half-life and sample-weight sensitivity analyses, and a summary report. Verify
+the calculation logic with:
+
+```sh
+python3 Code/nfl_RAPM/aggregate_rapm_years.py --selftest
+```
+
 ## Limitations
 
 One season of football RAPM is noisy. Players who are almost always on the field

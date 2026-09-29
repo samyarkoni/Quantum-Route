@@ -451,52 +451,61 @@ def _primary_output(
         offense = side_lookup.get((identity, "offense"))
         defense = side_lookup.get((identity, "defense"))
         player_rows = observations[observations["identity"] == identity]
-        all_years = set(player_rows["season"].astype(int))
+        plays_by_side = player_rows.groupby("side")["plays"].sum().to_dict()
+        rating_side = max(
+            SIDES,
+            key=lambda side: (
+                float(plays_by_side.get(side, 0.0)),
+                int(side == "offense"),
+            ),
+        )
+        rating = offense if rating_side == "offense" else defense
+        other_side = "defense" if rating_side == "offense" else "offense"
+        other_rating = defense if rating_side == "offense" else offense
+        side_rows = player_rows[player_rows["side"] == rating_side]
+        other_side_rows = player_rows[player_rows["side"] == other_side]
         qualified_years = set(
-            player_rows.loc[player_rows["plays"] >= QUALIFYING_PLAYS, "season"].astype(int)
+            side_rows.loc[
+                side_rows["plays"] >= QUALIFYING_PLAYS, "season"
+            ].astype(int)
         )
         recent = player_rows[player_rows["season"] == meta["most_recent_player_season"]]
-        recent_offense = recent[recent["side"] == "offense"]
-        recent_defense = recent[recent["side"] == "defense"]
+        recent_selected = recent[recent["side"] == rating_side]
+        latest_selected = side_rows.sort_values("season").iloc[-1]
         rows.append(
             {
                 "player_id": meta["player_id"],
                 "player_name": meta["player_name"],
                 "position": meta["position"],
                 "most_recent_team": meta["most_recent_team"],
-                "final_RAPM": np.nan,
-                "final_ORAPM": offense.value if offense is not None else np.nan,
-                "final_DRAPM": defense.value if defense is not None else np.nan,
+                "side": rating_side,
+                "final_RAPM": rating.value if rating is not None else np.nan,
                 "qualified_seasons": len(qualified_years),
-                "qualified_ORAPM_seasons": offense.qualified_seasons if offense is not None else 0,
-                "qualified_DRAPM_seasons": defense.qualified_seasons if defense is not None else 0,
-                "total_seasons": len(all_years),
-                "total_plays": float(player_rows["plays"].sum()),
-                "offense_total_plays": float(player_rows.loc[player_rows["side"] == "offense", "plays"].sum()),
-                "defense_total_plays": float(player_rows.loc[player_rows["side"] == "defense", "plays"].sum()),
-                "most_recent_season": meta["most_recent_player_season"],
-                "most_recent_season_RAPM": np.nan,
-                "most_recent_season_ORAPM": (
-                    float(recent_offense["observed_rapm"].iloc[0])
-                    if not recent_offense.empty
-                    else np.nan
-                ),
-                "most_recent_season_DRAPM": (
-                    float(recent_defense["observed_rapm"].iloc[0])
-                    if not recent_defense.empty
+                "total_seasons": int(side_rows["season"].nunique()),
+                "total_plays": float(side_rows["plays"].sum()),
+                "most_recent_season": int(latest_selected["season"]),
+                "most_recent_season_RAPM": (
+                    float(recent_selected["observed_rapm"].iloc[0])
+                    if not recent_selected.empty
                     else np.nan
                 ),
                 "weighted_seasons_used": len(
                     set(
-                        player_rows.loc[player_rows["plays"] > 0, "season"].astype(int)
+                        side_rows.loc[side_rows["plays"] > 0, "season"].astype(int)
                     )
                 ),
-                "ORAPM_effective_weight": offense.effective_weight if offense is not None else 0.0,
-                "DRAPM_effective_weight": defense.effective_weight if defense is not None else 0.0,
-                "ORAPM_pct_qualified_weight": offense.pct_qualified_weight if offense is not None else np.nan,
-                "DRAPM_pct_qualified_weight": defense.pct_qualified_weight if defense is not None else np.nan,
-                "ORAPM_pct_unqualified_weight": offense.pct_unqualified_weight if offense is not None else np.nan,
-                "DRAPM_pct_unqualified_weight": defense.pct_unqualified_weight if defense is not None else np.nan,
+                "effective_weight": rating.effective_weight if rating is not None else 0.0,
+                "percentage_of_weight_from_qualified_seasons": (
+                    rating.pct_qualified_weight if rating is not None else np.nan
+                ),
+                "percentage_of_weight_from_unqualified_seasons": (
+                    rating.pct_unqualified_weight if rating is not None else np.nan
+                ),
+                "other_side_plays_excluded": float(other_side_rows["plays"].sum()),
+                "has_both_side_records": bool(not side_rows.empty and not other_side_rows.empty),
+                "qualified_other_side_seasons": (
+                    other_rating.qualified_seasons if other_rating is not None else 0
+                ),
             }
         )
     return pd.DataFrame(rows).sort_values(["player_name", "player_id"]), worked
@@ -657,10 +666,10 @@ def _formula_and_example() -> str:
         "  2023: 120 plays, observed RAPM is ignored; qualified-season league "
         "+0.10 => value +0.05, decay 0.500, "
         f"sample {min(120 / 200, UNQUALIFIED_WEIGHT_CAP):.3f}, weight {old_weight:.3f}\n"
-        f"  final ORAPM = (2.000 * 0.20 + {old_weight:.3f} * 0.05) / "
+        f"  final_RAPM (offense side) = (2.000 * 0.20 + {old_weight:.3f} * 0.05) / "
         f"(2.000 + {old_weight:.3f}) = {weighted_value:.6f}\n"
-        "  The missing 2024 season contributes nothing. final_RAPM is blank by "
-        "design because offense and defense are separate statistical domains."
+        "  The missing 2024 season contributes nothing. The player's final rating "
+        "uses only their selected primary side; the two sides are never added."
     )
 
 
@@ -685,6 +694,43 @@ def run_selftest() -> None:
     assert np.isclose(result.iloc[0]["value"], expected)
     assert _sample_weight(400, True, "linear_cap1") == 1.0
     assert np.isclose(_sample_weight(400, True, "sqrt_cap3"), math.sqrt(2.0))
+    player_seasons = pd.DataFrame(
+        [
+            {
+                "season": 2025,
+                "identity": "id:two-way-listing",
+                "player_id": "two-way-listing",
+                "player_name": "Example Player",
+                "position": "RB",
+                "team": "",
+                "side": "offense",
+                "plays": 250.0,
+                "observed_rapm": 0.2,
+            },
+            {
+                "season": 2025,
+                "identity": "id:two-way-listing",
+                "player_id": "two-way-listing",
+                "player_name": "Example Player",
+                "position": "RB",
+                "team": "",
+                "side": "defense",
+                "plays": 300.0,
+                "observed_rapm": -0.1,
+            },
+        ]
+    )
+    primary, _ = _primary_output(
+        player_seasons,
+        {(2025, "offense"): 0.0, (2025, "defense"): 0.0},
+        2025,
+    )
+    assert len(primary) == 1
+    assert primary.iloc[0]["side"] == "defense"
+    assert np.isclose(primary.iloc[0]["final_RAPM"], -0.1)
+    assert primary.iloc[0]["other_side_plays_excluded"] == 250.0
+    assert "final_ORAPM" not in primary.columns
+    assert "final_DRAPM" not in primary.columns
     print("Aggregation self-test passed.")
 
 
@@ -719,15 +765,17 @@ def _write_summary(
         "",
         _formula_and_example(),
         "",
-        "Interpretation: ORAPM and DRAPM are computed independently; final_RAPM is "
-        "intentionally blank rather than summing offense and defense. Recent "
-        "seasons receive more weight, qualified larger samples receive more "
-        "weight, unqualified seasons use half the qualified-player league average, "
-        "and missing seasons contribute nothing. League averages are calculated "
-        "separately by season and side; position-specific averages are not used "
-        "because the source RAPM is not explicitly position-normalized. If the "
-        "league average is centered at zero, the specified unqualified fallback "
-        "is also zero.",
+        "Interpretation: every player receives one final_RAPM from their primary "
+        "side, selected as the side with the most observed plays across supplied "
+        "seasons. Any records on the opposite side are excluded from that player's "
+        "final rating and identified in output diagnostics; offense and defense "
+        "ratings are never added. Recent seasons receive more weight, qualified "
+        "larger samples receive more weight, unqualified seasons use half the "
+        "qualified-player league average, and missing seasons contribute nothing. "
+        "League averages are calculated separately by season and side; "
+        "position-specific averages are not used because the source RAPM is not "
+        "explicitly position-normalized. If the league average is centered at "
+        "zero, the specified unqualified fallback is also zero.",
         "",
         "Per-season inputs:",
     ]
@@ -746,11 +794,8 @@ def _write_summary(
             f"  2: {status_counts[2]}",
             f"  3+: {status_counts[3]}",
             "",
-            "Primary final ORAPM distribution:",
-            final["final_ORAPM"].describe().to_string(),
-            "",
-            "Primary final DRAPM distribution:",
-            final["final_DRAPM"].describe().to_string(),
+            "Primary final_RAPM distribution (each player on their primary side):",
+            final["final_RAPM"].describe().to_string(),
             "",
             "Sensitivity correlations to the 2-year / linear-cap-3 primary result:",
         ]
@@ -776,13 +821,12 @@ def _write_summary(
             + ". Add more rapm_[YEAR] folders to illustrate longitudinal cases."
         )
     unqualified_primary = final[
-        (final["ORAPM_pct_unqualified_weight"] > 50)
-        | (final["DRAPM_pct_unqualified_weight"] > 50)
+        final["percentage_of_weight_from_unqualified_seasons"] > 50
     ]
     lines.extend(
         [
             "",
-            f"Players with >50% of either component's weight from unqualified "
+            f"Players with >50% of their selected-side weight from unqualified "
             f"fallback seasons: {len(unqualified_primary)}",
             "The corresponding player rows are in primarily_unqualified.csv.",
             "",
@@ -872,8 +916,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     examples, selected_examples = _examples(worked)
     primarily_unqualified = final[
-        (final["ORAPM_pct_unqualified_weight"] > 50)
-        | (final["DRAPM_pct_unqualified_weight"] > 50)
+        final["percentage_of_weight_from_unqualified_seasons"] > 50
     ].copy()
     args.outdir.mkdir(parents=True, exist_ok=True)
     final.to_csv(args.outdir / "multi_year_rapm.csv", index=False)
