@@ -16,7 +16,6 @@ import pandas as pd
 
 QUALIFYING_PLAYS = 200.0
 QUALIFIED_SAMPLE_CAP = 3.0
-UNQUALIFIED_WEIGHT_CAP = 0.25
 HALF_LIVES = (1.0, 1.5, 2.0, 3.0, 4.0)
 SAMPLE_SCHEMES = ("linear_cap3", "linear_cap1", "sqrt_cap3")
 SIDES = ("offense", "defense")
@@ -346,7 +345,7 @@ def _position_q25s(
 
 def _sample_weight(plays: float, qualified: bool, scheme: str) -> float:
     if not qualified:
-        return min(max(plays, 0.0) / QUALIFYING_PLAYS, UNQUALIFIED_WEIGHT_CAP)
+        return 1.0
     ratio = max(plays, 0.0) / QUALIFYING_PLAYS
     if scheme == "linear_cap1":
         return min(ratio, 1.0)
@@ -355,16 +354,73 @@ def _sample_weight(plays: float, qualified: bool, scheme: str) -> float:
     return min(ratio, QUALIFIED_SAMPLE_CAP)
 
 
+def _complete_season_grid(
+    observations: pd.DataFrame,
+    seasons: list[int],
+) -> pd.DataFrame:
+    rows = observations.to_dict("records")
+    for (identity, side), group in observations.groupby(
+        ["identity", "side"], sort=False
+    ):
+        observed_seasons = set(group["season"].astype(int))
+        positions = [
+            _clean_text(value)
+            for value in group.sort_values("season")["position"]
+            if _clean_text(value)
+        ]
+        position = Counter(positions).most_common(1)[0][0] if positions else ""
+        player_id = next((value for value in group["player_id"] if value), "")
+        player_name = next(
+            (value for value in reversed(group["player_name"].tolist()) if value), ""
+        )
+        for season in seasons:
+            if season in observed_seasons:
+                continue
+            rows.append(
+                {
+                    "season": int(season),
+                    "identity": identity,
+                    "player_id": player_id,
+                    "player_name": player_name,
+                    "position": position,
+                    "team": "",
+                    "side": side,
+                    "plays": 0.0,
+                    "observed_rapm": np.nan,
+                    "source_roles": "",
+                    "input_rows": 0,
+                    "is_missing_season": True,
+                }
+            )
+    completed = pd.DataFrame(rows)
+    if "is_missing_season" not in completed:
+        completed["is_missing_season"] = False
+    else:
+        completed["is_missing_season"] = completed["is_missing_season"].fillna(False)
+    return completed.sort_values(["identity", "side", "season"]).reset_index(drop=True)
+
+
 def _evaluate(
     observations: pd.DataFrame,
     position_q25s: dict[tuple[int, str, str], tuple[float, int]],
     target_season: int,
     half_life: float,
     sample_scheme: str,
+    seasons: list[int] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    worked = observations.copy()
-    worked["qualified"] = worked["plays"] >= QUALIFYING_PLAYS
-    worked["status"] = np.where(worked["qualified"], "QUALIFIED", "UNQUALIFIED")
+    selected_seasons = seasons or sorted(observations["season"].astype(int).unique())
+    worked = _complete_season_grid(observations, selected_seasons)
+    worked["qualified"] = (
+        ~worked["is_missing_season"] & (worked["plays"] >= QUALIFYING_PLAYS)
+    )
+    worked["status"] = np.select(
+        [
+            worked["is_missing_season"].to_numpy(dtype=bool),
+            worked["qualified"].to_numpy(dtype=bool),
+        ],
+        ["MISSING", "QUALIFIED"],
+        default="UNQUALIFIED",
+    )
     fallback_values: list[float] = []
     fallback_positions: list[str] = []
     fallback_populations: list[int] = []
@@ -416,8 +472,15 @@ def _evaluate(
         qualified_weight = float(
             group.loc[group["qualified"], "combined_weight"].sum()
         )
-        unqualified_weight = effective_weight - qualified_weight
-        first = group.iloc[0]
+        unqualified_weight = float(
+            group.loc[
+                (group["status"] == "UNQUALIFIED"), "combined_weight"
+            ].sum()
+        )
+        missing_weight = float(
+            group.loc[group["status"] == "MISSING", "combined_weight"].sum()
+        )
+        fallback_weight = unqualified_weight + missing_weight
         results.append(
             {
                 "identity": identity,
@@ -426,6 +489,8 @@ def _evaluate(
                 "effective_weight": effective_weight,
                 "qualified_weight": qualified_weight,
                 "unqualified_weight": unqualified_weight,
+                "missing_weight": missing_weight,
+                "fallback_weight": fallback_weight,
                 "pct_qualified_weight": (
                     100.0 * qualified_weight / effective_weight
                     if effective_weight > 0
@@ -436,7 +501,23 @@ def _evaluate(
                     if effective_weight > 0
                     else float("nan")
                 ),
+                "pct_missing_weight": (
+                    100.0 * missing_weight / effective_weight
+                    if effective_weight > 0
+                    else float("nan")
+                ),
+                "pct_fallback_weight": (
+                    100.0 * fallback_weight / effective_weight
+                    if effective_weight > 0
+                    else float("nan")
+                ),
                 "qualified_seasons": int(group.loc[group["qualified"], "season"].nunique()),
+                "unqualified_seasons": int(
+                    group.loc[group["status"] == "UNQUALIFIED", "season"].nunique()
+                ),
+                "missing_seasons": int(
+                    group.loc[group["status"] == "MISSING", "season"].nunique()
+                ),
                 "total_seasons": int(group["season"].nunique()),
                 "total_plays": float(group["plays"].sum()),
                 "weighted_seasons_used": int((group["combined_weight"] > 0).sum()),
@@ -449,6 +530,7 @@ def _primary_output(
     observations: pd.DataFrame,
     position_q25s: dict[tuple[int, str, str], tuple[float, int]],
     target_season: int,
+    seasons: list[int] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     worked, component_results = _evaluate(
         observations,
@@ -456,6 +538,7 @@ def _primary_output(
         target_season,
         half_life=2.0,
         sample_scheme="linear_cap3",
+        seasons=seasons,
     )
     metadata: dict[str, dict[str, Any]] = {}
     for identity, group in observations.groupby("identity", sort=False):
@@ -514,7 +597,7 @@ def _primary_output(
                 "side": rating_side,
                 "final_RAPM": rating.value if rating is not None else np.nan,
                 "qualified_seasons": len(qualified_years),
-                "total_seasons": int(side_rows["season"].nunique()),
+                "total_seasons": rating.total_seasons if rating is not None else 0,
                 "total_plays": float(side_rows["plays"].sum()),
                 "most_recent_season": int(latest_selected["season"]),
                 "most_recent_season_RAPM": (
@@ -522,10 +605,8 @@ def _primary_output(
                     if not recent_selected.empty
                     else np.nan
                 ),
-                "weighted_seasons_used": len(
-                    set(
-                        side_rows.loc[side_rows["plays"] > 0, "season"].astype(int)
-                    )
+                "weighted_seasons_used": (
+                    rating.weighted_seasons_used if rating is not None else 0
                 ),
                 "effective_weight": rating.effective_weight if rating is not None else 0.0,
                 "percentage_of_weight_from_qualified_seasons": (
@@ -533,6 +614,18 @@ def _primary_output(
                 ),
                 "percentage_of_weight_from_unqualified_seasons": (
                     rating.pct_unqualified_weight if rating is not None else np.nan
+                ),
+                "percentage_of_weight_from_missing_seasons": (
+                    rating.pct_missing_weight if rating is not None else np.nan
+                ),
+                "percentage_of_weight_from_q25_seasons": (
+                    rating.pct_fallback_weight if rating is not None else np.nan
+                ),
+                "unqualified_seasons": (
+                    rating.unqualified_seasons if rating is not None else 0
+                ),
+                "missing_seasons": (
+                    rating.missing_seasons if rating is not None else 0
                 ),
                 "other_side_plays_excluded": float(other_side_rows["plays"].sum()),
                 "has_both_side_records": bool(not side_rows.empty and not other_side_rows.empty),
@@ -548,13 +641,14 @@ def _sensitivity(
     observations: pd.DataFrame,
     position_q25s: dict[tuple[int, str, str], tuple[float, int]],
     target_season: int,
+    seasons: list[int] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     rows: list[pd.DataFrame] = []
     baseline: pd.DataFrame | None = None
     for scheme in SAMPLE_SCHEMES:
         for half_life in HALF_LIVES:
             _, values = _evaluate(
-                observations, position_q25s, target_season, half_life, scheme
+                observations, position_q25s, target_season, half_life, scheme, seasons
             )
             values["half_life_years"] = half_life
             values["sample_weight_scheme"] = scheme
@@ -609,17 +703,19 @@ def _examples(worked: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, str]]:
         elif qcount == 1:
             selections.setdefault("one_qualified_season", identity)
         elif qcount == 0:
-            selections.setdefault("only_unqualified_seasons", identity)
+            selections.setdefault("only_q25_fallback_seasons", identity)
         qualified_years = sorted(
             set(group.loc[group["qualified"], "season"].astype(int))
         )
         if len(qualified_years) >= 2:
             missing_between = any(
-                qualified_years[index + 1] - qualified_years[index] > 1
-                and any(
-                    year not in set(group["season"].astype(int))
-                    for year in range(qualified_years[index] + 1, qualified_years[index + 1])
-                )
+                (
+                    group["status"].eq("MISSING")
+                    & group["season"].between(
+                        qualified_years[index] + 1,
+                        qualified_years[index + 1] - 1,
+                    )
+                ).any()
                 for index in range(len(qualified_years) - 1)
             )
             if missing_between:
@@ -641,7 +737,7 @@ def _examples(worked: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, str]]:
                     "season": row.season,
                     "plays": row.plays,
                     "status": row.status,
-                    "observed_RAPM_not_used_if_unqualified": row.observed_rapm,
+                    "observed_RAPM_not_used_if_q25_fallback": row.observed_rapm,
                     "position_q25_fallback": row.position_q25_fallback,
                     "fallback_position_group": row.fallback_position_group,
                     "fallback_qualified_population": row.fallback_qualified_population,
@@ -659,7 +755,7 @@ def _examples(worked: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, str]]:
         "season",
         "plays",
         "status",
-        "observed_RAPM_not_used_if_unqualified",
+        "observed_RAPM_not_used_if_q25_fallback",
         "position_q25_fallback",
         "fallback_position_group",
         "fallback_qualified_population",
@@ -673,11 +769,9 @@ def _examples(worked: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, str]]:
 
 def _formula_and_example() -> str:
     qualified_sample = "min(plays / 200, 3.0)"
-    unqualified_sample = f"min(plays / 200, {UNQUALIFIED_WEIGHT_CAP:.2f})"
+    fallback_sample = "1.0"
     current_weight = 1.0 * min(400.0 / QUALIFYING_PLAYS, QUALIFIED_SAMPLE_CAP)
-    old_weight = (0.5 ** (2.0 / 2.0)) * min(
-        120.0 / QUALIFYING_PLAYS, UNQUALIFIED_WEIGHT_CAP
-    )
+    old_weight = 0.5 ** (2.0 / 2.0) * 1.0
     fallback = 0.05
     weighted_value = (current_weight * 0.20 + old_weight * fallback) / (
         current_weight + old_weight
@@ -688,26 +782,28 @@ def _formula_and_example() -> str:
         "  decay_weight = 0.5 ** (years_ago / half_life_years)\n"
         f"  qualified (plays >= {int(QUALIFYING_PLAYS)}): season_value = observed RAPM; "
         f"sample_weight = {qualified_sample}\n"
-        "  unqualified: season_value = same-season, same-side, same-position-group "
-        "25th percentile among qualified players; "
-        f"sample_weight = {unqualified_sample} (a conservative cap on total influence)\n"
+        "  unqualified or missing: season_value = same-season, same-side, "
+        "same-position-group 25th percentile among qualified players; "
+        f"sample_weight = {fallback_sample}\n"
         "  if the position group has no qualified players, use the same-side "
         "season 25th percentile; if no side-qualified players exist, use 0\n"
         "  combined_weight = decay_weight * sample_weight\n"
         "  final_side_RAPM = sum(combined_weight * season_value) / "
         "sum(combined_weight)\n"
-        "  absent player-seasons contribute no observation or weight.\n"
+        "  every player-side is represented in every supplied season; missing "
+        "seasons use the same Q25 fallback and full season weight.\n"
         "Worked example (illustrative offense-side player; target season 2025; "
         "half-life 2 years):\n"
         "  2025: 400 plays, observed RAPM +0.20 => value +0.20, decay 1.000, "
         f"sample 2.000, weight {current_weight:.3f}\n"
         "  2023: 120 plays, observed RAPM is ignored; qualified RB 25th percentile "
         "+0.05 => value +0.05, decay 0.500, "
-        f"sample {min(120 / 200, UNQUALIFIED_WEIGHT_CAP):.3f}, weight {old_weight:.3f}\n"
+        f"sample {fallback_sample}, weight {old_weight:.3f}\n"
         f"  final_RAPM (offense side) = (2.000 * 0.20 + {old_weight:.3f} * 0.05) / "
         f"(2.000 + {old_weight:.3f}) = {weighted_value:.6f}\n"
-        "  The missing 2024 season contributes nothing. The player's final rating "
-        "uses only their selected primary side; the two sides are never added."
+        "  Any missing season contributes its position Q25 at full season weight. "
+        "The player's final rating uses only their selected primary side; the two "
+        "sides are never added."
     )
 
 
@@ -715,7 +811,7 @@ def run_selftest() -> None:
     assert _sample_weight(200, True, "linear_cap3") == 1.0
     assert _sample_weight(600, True, "linear_cap3") == 3.0
     assert _sample_weight(1000, True, "linear_cap3") == 3.0
-    assert _sample_weight(120, False, "linear_cap3") == UNQUALIFIED_WEIGHT_CAP
+    assert _sample_weight(120, False, "linear_cap3") == 1.0
     frame = pd.DataFrame(
         [
             {"season": 2025, "identity": "x", "side": "offense", "plays": 400, "observed_rapm": 0.2,
@@ -741,17 +837,52 @@ def run_selftest() -> None:
         ]
     )
     frame = pd.concat([frame, reference], ignore_index=True)
+    frame = pd.concat(
+        [
+            frame,
+            reference.assign(
+                season=2024,
+                observed_rapm=[0.2, 0.3, 0.4, 0.5],
+            ),
+        ],
+        ignore_index=True,
+    )
     q25s = _position_q25s(frame)
     assert np.isclose(q25s[(2023, "offense", "RB")][0], 0.175)
-    worked, result = _evaluate(frame, q25s, 2025, 2.0, "linear_cap3")
-    target_rows = worked[worked["identity"] == "x"].reset_index(drop=True)
-    assert np.allclose(target_rows["season_value_used"], [0.2, 0.175])
-    assert np.allclose(target_rows["time_decay_weight"], [1.0, 0.5])
-    expected = (2.0 * 0.2 + 0.125 * 0.175) / 2.125
+    assert np.isclose(q25s[(2024, "offense", "RB")][0], 0.275)
+    worked, result = _evaluate(
+        frame, q25s, 2025, 2.0, "linear_cap3", seasons=[2023, 2024, 2025]
+    )
+    target_rows = (
+        worked[worked["identity"] == "x"].set_index("season").sort_index()
+    )
+    assert np.allclose(
+        target_rows["season_value_used"].to_numpy(), [0.175, 0.275, 0.2]
+    )
+    assert np.allclose(
+        target_rows["time_decay_weight"].to_numpy(), [0.5, 2 ** -0.5, 1.0]
+    )
+    assert target_rows.loc[2024, "status"] == "MISSING"
+    assert target_rows.loc[2024, "sample_weight"] == 1.0
+    assert target_rows.loc[2023, "sample_weight"] == 1.0
+    expected = (0.5 * 0.175 + (2 ** -0.5) * 0.275 + 2.0 * 0.2) / (
+        0.5 + 2 ** -0.5 + 2.0
+    )
     target_result = result[result["identity"] == "x"].iloc[0]
     assert np.isclose(target_result["value"], expected)
-    assert target_rows.loc[1, "observed_rapm"] == 999.0
-    assert target_rows.loc[1, "season_value_used"] != 999.0
+    assert target_result["total_seasons"] == 3
+    assert target_result["missing_seasons"] == 1
+    assert target_result["unqualified_seasons"] == 1
+    assert target_result["weighted_seasons_used"] == 3
+    assert target_rows.loc[2023, "observed_rapm"] == 999.0
+    assert target_rows.loc[2023, "season_value_used"] != 999.0
+    completed_output, _ = _primary_output(
+        frame, q25s, 2025, seasons=[2023, 2024, 2025]
+    )
+    target_output = completed_output[completed_output["player_id"] == "x"].iloc[0]
+    assert np.isclose(target_output["final_RAPM"], expected)
+    assert target_output["total_seasons"] == 3
+    assert target_output["missing_seasons"] == 1
     assert _sample_weight(400, True, "linear_cap1") == 1.0
     assert np.isclose(_sample_weight(400, True, "sqrt_cap3"), math.sqrt(2.0))
     player_seasons = pd.DataFrame(
@@ -860,8 +991,9 @@ def _write_summary(
         "ratings are never added. Recent seasons receive more weight, qualified "
         "larger samples receive more weight, unqualified seasons use the "
         "same-season, same-side, same-position-group 25th percentile among "
-        "qualified players, and missing seasons contribute nothing. If no "
-        "qualified players exist in that position group, the same-side seasonal "
+        "qualified players, and missing seasons use the same Q25 at full season "
+        "weight. If no qualified players exist in that position group, "
+        "the same-side seasonal "
         "25th percentile is used; if that is also unavailable, the fallback is 0.",
         "",
         "Per-season inputs:",
@@ -907,15 +1039,15 @@ def _write_summary(
             + ", ".join(sorted(missing_example_cases))
             + ". Add more rapm_[YEAR] folders to illustrate longitudinal cases."
         )
-    unqualified_primary = final[
-        final["percentage_of_weight_from_unqualified_seasons"] > 50
+    fallback_primary = final[
+        final["percentage_of_weight_from_q25_seasons"] > 50
     ]
     lines.extend(
         [
             "",
             f"Players with >50% of their selected-side weight from unqualified "
-            f"position-Q25 fallback seasons: {len(unqualified_primary)}",
-            "The corresponding player rows are in primarily_unqualified.csv.",
+            f"or missing position-Q25 seasons: {len(fallback_primary)}",
+            "The corresponding player rows are in primarily_q25_fallback.csv.",
             "",
             "Data-quality issues:",
         ]
@@ -975,7 +1107,7 @@ def main(argv: list[str] | None = None) -> int:
             if (season, side, "") not in position_q25s:
                 issues.append(
                     f"{season} {side}: no qualified player-seasons to form a "
-                    "same-side fallback; unqualified season values use 0."
+                    "same-side fallback; unqualified or missing values use 0."
                 )
     if any(info["metric_unit_conversion"] == "divide by 100" for info in season_diagnostics):
         if any(info["metric_unit_conversion"] == "none" for info in season_diagnostics):
@@ -994,12 +1126,15 @@ def main(argv: list[str] | None = None) -> int:
         print("\nPreview only: no output files were written.")
         return 0
 
-    final, worked = _primary_output(observations, position_q25s, target_season)
+    selected_seasons = list(seasons)
+    final, worked = _primary_output(
+        observations, position_q25s, target_season, selected_seasons
+    )
     nonempty_ids = final.loc[final["player_id"].ne(""), "player_id"]
     if nonempty_ids.duplicated().any():
         raise ValueError("Internal validation failed: duplicate player IDs in final output")
     sensitivity, sensitivity_summary = _sensitivity(
-        observations, position_q25s, target_season
+        observations, position_q25s, target_season, selected_seasons
     )
     examples, selected_examples = _examples(worked)
     side_fallbacks = int(
@@ -1012,16 +1147,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     if side_fallbacks:
         issues.append(
-            f"{side_fallbacks} unqualified player-season(s) lacked a qualified "
-            "same-position group and used the same-side seasonal 25th percentile."
+            f"{side_fallbacks} unqualified or missing player-season(s) lacked a "
+            "qualified same-position group and used the same-side seasonal "
+            "25th percentile."
         )
     if zero_fallbacks:
         issues.append(
-            f"{zero_fallbacks} unqualified player-season(s) had no qualified "
-            "same-side or same-position comparison and used a fallback value of 0."
+            f"{zero_fallbacks} unqualified or missing player-season(s) had no "
+            "qualified same-side or same-position comparison and used a "
+            "fallback value of 0."
         )
-    primarily_unqualified = final[
-        final["percentage_of_weight_from_unqualified_seasons"] > 50
+    primarily_fallback = final[
+        final["percentage_of_weight_from_q25_seasons"] > 50
     ].copy()
     args.outdir.mkdir(parents=True, exist_ok=True)
     final.to_csv(args.outdir / "multi_year_rapm.csv", index=False)
@@ -1029,8 +1166,8 @@ def main(argv: list[str] | None = None) -> int:
     sensitivity.to_csv(args.outdir / "sensitivity_analysis.csv", index=False)
     sensitivity_summary.to_csv(args.outdir / "sensitivity_correlations.csv", index=False)
     examples.to_csv(args.outdir / "example_calculations.csv", index=False)
-    primarily_unqualified.to_csv(
-        args.outdir / "primarily_unqualified.csv", index=False
+    primarily_fallback.to_csv(
+        args.outdir / "primarily_q25_fallback.csv", index=False
     )
     pd.DataFrame(season_diagnostics).to_csv(
         args.outdir / "input_diagnostics.csv", index=False
@@ -1049,7 +1186,7 @@ def main(argv: list[str] | None = None) -> int:
     print(
         "Output files: multi_year_rapm.csv, season_calculations.csv, "
         "sensitivity_analysis.csv, sensitivity_correlations.csv, "
-        "example_calculations.csv, primarily_unqualified.csv, "
+        "example_calculations.csv, primarily_q25_fallback.csv, "
         "input_diagnostics.csv, summary.txt"
     )
     return 0

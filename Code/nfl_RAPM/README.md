@@ -118,11 +118,17 @@ The aggregator emits one `final_RAPM` per player, using only that player's
 primary side (the side with more observed plays across supplied seasons). It
 never adds offensive and defensive ratings; any opposite-side records are
 excluded from the final value and reported in diagnostic columns. For any
-unqualified season (<200 plays), the observed RAPM is replaced by the
-same-season, same-side, same-position-group 25th percentile among qualified
-players. If that position group has no qualified players, it falls back to the
-same-side seasonal 25th percentile; if that is unavailable too, it uses zero.
-The unqualified season retains a capped low sample weight.
+unqualified season (<200 plays) or missing player-season in a supplied input
+year, RAPM is replaced by the same-season, same-side, same-position-group 25th
+percentile among qualified players. These fallback seasons receive full base
+season weight (1.0) before time decay. If that position group has no qualified
+players, the aggregator falls back to the same-side seasonal 25th percentile;
+if that is unavailable too, it uses zero. Every player-side is completed across
+all supplied `rapm_[YEAR]` folders, so absent player-seasons no longer disappear
+from the weighted average. Years without an input folder cannot be included
+because no season-specific position percentile can be calculated for them. For
+a missing player-side season, the position group comes from that player's most
+frequently reported position on that side in the supplied inputs.
 
 It prints the weighting formula and an auditable worked example before writing
 files. Use `--preview-only` to inspect the formula without creating outputs.
