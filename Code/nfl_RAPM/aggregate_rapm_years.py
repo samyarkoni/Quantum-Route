@@ -319,10 +319,29 @@ def collapse_player_seasons(
     return season_side, issues
 
 
-def _league_averages(observations: pd.DataFrame) -> dict[tuple[int, str], float]:
+def _position_q25s(
+    observations: pd.DataFrame,
+) -> dict[tuple[int, str, str], tuple[float, int]]:
     qualified = observations[observations["plays"] >= QUALIFYING_PLAYS]
-    averages = qualified.groupby(["season", "side"])["observed_rapm"].mean()
-    return {(int(season), str(side)): float(value) for (season, side), value in averages.items()}
+    result: dict[tuple[int, str, str], tuple[float, int]] = {}
+    for (season, side, position), group in qualified.groupby(
+        ["season", "side", "position"], dropna=False
+    ):
+        values = group["observed_rapm"].to_numpy(dtype=float)
+        if len(values):
+            position_key = _clean_text(position).upper()
+            result[(int(season), str(side), position_key)] = (
+                float(np.quantile(values, 0.25)),
+                len(values),
+            )
+    for (season, side), group in qualified.groupby(["season", "side"], dropna=False):
+        values = group["observed_rapm"].to_numpy(dtype=float)
+        if len(values):
+            result[(int(season), str(side), "")] = (
+                float(np.quantile(values, 0.25)),
+                len(values),
+            )
+    return result
 
 
 def _sample_weight(plays: float, qualified: bool, scheme: str) -> float:
@@ -338,7 +357,7 @@ def _sample_weight(plays: float, qualified: bool, scheme: str) -> float:
 
 def _evaluate(
     observations: pd.DataFrame,
-    league_averages: dict[tuple[int, str], float],
+    position_q25s: dict[tuple[int, str, str], tuple[float, int]],
     target_season: int,
     half_life: float,
     sample_scheme: str,
@@ -346,25 +365,39 @@ def _evaluate(
     worked = observations.copy()
     worked["qualified"] = worked["plays"] >= QUALIFYING_PLAYS
     worked["status"] = np.where(worked["qualified"], "QUALIFIED", "UNQUALIFIED")
-    league_values: list[float] = []
+    fallback_values: list[float] = []
+    fallback_positions: list[str] = []
+    fallback_populations: list[int] = []
     season_values: list[float] = []
     decays: list[float] = []
     sample_weights: list[float] = []
     combined_weights: list[float] = []
     for row in worked.itertuples(index=False):
-        league = league_averages.get((int(row.season), str(row.side)), 0.0)
-        league_values.append(league)
+        position = _clean_text(row.position).upper()
+        fallback = position_q25s.get(
+            (int(row.season), str(row.side), position)
+        )
+        fallback_scope = position
+        if fallback is None:
+            fallback = position_q25s.get((int(row.season), str(row.side), ""))
+            fallback_scope = "SIDE"
+        fallback_value, fallback_count = fallback if fallback is not None else (0.0, 0)
+        fallback_values.append(fallback_value)
+        fallback_positions.append(fallback_scope if fallback is not None else "ZERO_NO_QUALIFIED")
+        fallback_populations.append(fallback_count)
         season_values.append(
             float(row.observed_rapm)
             if row.qualified
-            else 0.50 * league
+            else fallback_value
         )
         decay = 0.5 ** ((target_season - int(row.season)) / half_life)
         sample = _sample_weight(float(row.plays), bool(row.qualified), sample_scheme)
         decays.append(decay)
         sample_weights.append(sample)
         combined_weights.append(decay * sample)
-    worked["season_league_average"] = league_values
+    worked["position_q25_fallback"] = fallback_values
+    worked["fallback_position_group"] = fallback_positions
+    worked["fallback_qualified_population"] = fallback_populations
     worked["season_value_used"] = season_values
     worked["time_decay_weight"] = decays
     worked["sample_weight"] = sample_weights
@@ -414,12 +447,12 @@ def _evaluate(
 
 def _primary_output(
     observations: pd.DataFrame,
-    league_averages: dict[tuple[int, str], float],
+    position_q25s: dict[tuple[int, str, str], tuple[float, int]],
     target_season: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     worked, component_results = _evaluate(
         observations,
-        league_averages,
+        position_q25s,
         target_season,
         half_life=2.0,
         sample_scheme="linear_cap3",
@@ -513,7 +546,7 @@ def _primary_output(
 
 def _sensitivity(
     observations: pd.DataFrame,
-    league_averages: dict[tuple[int, str], float],
+    position_q25s: dict[tuple[int, str, str], tuple[float, int]],
     target_season: int,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     rows: list[pd.DataFrame] = []
@@ -521,7 +554,7 @@ def _sensitivity(
     for scheme in SAMPLE_SCHEMES:
         for half_life in HALF_LIVES:
             _, values = _evaluate(
-                observations, league_averages, target_season, half_life, scheme
+                observations, position_q25s, target_season, half_life, scheme
             )
             values["half_life_years"] = half_life
             values["sample_weight_scheme"] = scheme
@@ -609,7 +642,9 @@ def _examples(worked: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, str]]:
                     "plays": row.plays,
                     "status": row.status,
                     "observed_RAPM_not_used_if_unqualified": row.observed_rapm,
-                    "season_league_average": row.season_league_average,
+                    "position_q25_fallback": row.position_q25_fallback,
+                    "fallback_position_group": row.fallback_position_group,
+                    "fallback_qualified_population": row.fallback_qualified_population,
                     "season_value_used": row.season_value_used,
                     "time_decay_weight": row.time_decay_weight,
                     "sample_weight": row.sample_weight,
@@ -625,7 +660,9 @@ def _examples(worked: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, str]]:
         "plays",
         "status",
         "observed_RAPM_not_used_if_unqualified",
-        "season_league_average",
+        "position_q25_fallback",
+        "fallback_position_group",
+        "fallback_qualified_population",
         "season_value_used",
         "time_decay_weight",
         "sample_weight",
@@ -641,7 +678,7 @@ def _formula_and_example() -> str:
     old_weight = (0.5 ** (2.0 / 2.0)) * min(
         120.0 / QUALIFYING_PLAYS, UNQUALIFIED_WEIGHT_CAP
     )
-    fallback = 0.5 * 0.10
+    fallback = 0.05
     weighted_value = (current_weight * 0.20 + old_weight * fallback) / (
         current_weight + old_weight
     )
@@ -651,10 +688,11 @@ def _formula_and_example() -> str:
         "  decay_weight = 0.5 ** (years_ago / half_life_years)\n"
         f"  qualified (plays >= {int(QUALIFYING_PLAYS)}): season_value = observed RAPM; "
         f"sample_weight = {qualified_sample}\n"
-        "  unqualified: season_value = 0.50 * that season's qualified-player "
-        "league mean; "
+        "  unqualified: season_value = same-season, same-side, same-position-group "
+        "25th percentile among qualified players; "
         f"sample_weight = {unqualified_sample} (a conservative cap on total influence)\n"
-        "  if the league mean is zero, the unqualified fallback is zero\n"
+        "  if the position group has no qualified players, use the same-side "
+        "season 25th percentile; if no side-qualified players exist, use 0\n"
         "  combined_weight = decay_weight * sample_weight\n"
         "  final_side_RAPM = sum(combined_weight * season_value) / "
         "sum(combined_weight)\n"
@@ -663,8 +701,8 @@ def _formula_and_example() -> str:
         "half-life 2 years):\n"
         "  2025: 400 plays, observed RAPM +0.20 => value +0.20, decay 1.000, "
         f"sample 2.000, weight {current_weight:.3f}\n"
-        "  2023: 120 plays, observed RAPM is ignored; qualified-season league "
-        "+0.10 => value +0.05, decay 0.500, "
+        "  2023: 120 plays, observed RAPM is ignored; qualified RB 25th percentile "
+        "+0.05 => value +0.05, decay 0.500, "
         f"sample {min(120 / 200, UNQUALIFIED_WEIGHT_CAP):.3f}, weight {old_weight:.3f}\n"
         f"  final_RAPM (offense side) = (2.000 * 0.20 + {old_weight:.3f} * 0.05) / "
         f"(2.000 + {old_weight:.3f}) = {weighted_value:.6f}\n"
@@ -686,12 +724,34 @@ def run_selftest() -> None:
              "player_id": "x", "player_name": "Example", "position": "RB", "team": ""},
         ]
     )
-    league = {(2025, "offense"): 0.1, (2023, "offense"): 0.1}
-    worked, result = _evaluate(frame, league, 2025, 2.0, "linear_cap3")
-    assert worked["season_value_used"].tolist() == [0.2, 0.05]
-    assert np.allclose(worked["time_decay_weight"], [1.0, 0.5])
-    expected = (2.0 * 0.2 + 0.125 * 0.05) / 2.125
-    assert np.isclose(result.iloc[0]["value"], expected)
+    reference = pd.DataFrame(
+        [
+            {
+                "season": 2023,
+                "identity": f"peer-{index}",
+                "player_id": f"peer-{index}",
+                "player_name": f"Peer {index}",
+                "position": "RB",
+                "team": "",
+                "side": "offense",
+                "plays": 200.0,
+                "observed_rapm": value,
+            }
+            for index, value in enumerate((0.1, 0.2, 0.3, 0.4))
+        ]
+    )
+    frame = pd.concat([frame, reference], ignore_index=True)
+    q25s = _position_q25s(frame)
+    assert np.isclose(q25s[(2023, "offense", "RB")][0], 0.175)
+    worked, result = _evaluate(frame, q25s, 2025, 2.0, "linear_cap3")
+    target_rows = worked[worked["identity"] == "x"].reset_index(drop=True)
+    assert np.allclose(target_rows["season_value_used"], [0.2, 0.175])
+    assert np.allclose(target_rows["time_decay_weight"], [1.0, 0.5])
+    expected = (2.0 * 0.2 + 0.125 * 0.175) / 2.125
+    target_result = result[result["identity"] == "x"].iloc[0]
+    assert np.isclose(target_result["value"], expected)
+    assert target_rows.loc[1, "observed_rapm"] == 999.0
+    assert target_rows.loc[1, "season_value_used"] != 999.0
     assert _sample_weight(400, True, "linear_cap1") == 1.0
     assert np.isclose(_sample_weight(400, True, "sqrt_cap3"), math.sqrt(2.0))
     player_seasons = pd.DataFrame(
@@ -731,6 +791,34 @@ def run_selftest() -> None:
     assert primary.iloc[0]["other_side_plays_excluded"] == 250.0
     assert "final_ORAPM" not in primary.columns
     assert "final_DRAPM" not in primary.columns
+
+    one_season = pd.concat(
+        [
+            reference[reference["season"] == 2023].assign(season=2025),
+            pd.DataFrame(
+                [
+                    {
+                        "season": 2025,
+                        "identity": "id:low-sample",
+                        "player_id": "low-sample",
+                        "player_name": "Low Sample",
+                        "position": "RB",
+                        "team": "",
+                        "side": "offense",
+                        "plays": 50.0,
+                        "observed_rapm": 9.0,
+                    }
+                ]
+            ),
+        ],
+        ignore_index=True,
+    )
+    one_season_q25 = _position_q25s(one_season)
+    one_season_output, _ = _primary_output(one_season, one_season_q25, 2025)
+    low_sample = one_season_output[one_season_output["player_id"] == "low-sample"].iloc[0]
+    assert low_sample["qualified_seasons"] == 0
+    assert np.isclose(low_sample["final_RAPM"], 0.175)
+    assert low_sample["final_RAPM"] != 9.0
     print("Aggregation self-test passed.")
 
 
@@ -770,12 +858,11 @@ def _write_summary(
         "seasons. Any records on the opposite side are excluded from that player's "
         "final rating and identified in output diagnostics; offense and defense "
         "ratings are never added. Recent seasons receive more weight, qualified "
-        "larger samples receive more weight, unqualified seasons use half the "
-        "qualified-player league average, and missing seasons contribute nothing. "
-        "League averages are calculated separately by season and side; "
-        "position-specific averages are not used because the source RAPM is not "
-        "explicitly position-normalized. If the league average is centered at "
-        "zero, the specified unqualified fallback is also zero.",
+        "larger samples receive more weight, unqualified seasons use the "
+        "same-season, same-side, same-position-group 25th percentile among "
+        "qualified players, and missing seasons contribute nothing. If no "
+        "qualified players exist in that position group, the same-side seasonal "
+        "25th percentile is used; if that is also unavailable, the fallback is 0.",
         "",
         "Per-season inputs:",
     ]
@@ -827,7 +914,7 @@ def _write_summary(
         [
             "",
             f"Players with >50% of their selected-side weight from unqualified "
-            f"fallback seasons: {len(unqualified_primary)}",
+            f"position-Q25 fallback seasons: {len(unqualified_primary)}",
             "The corresponding player rows are in primarily_unqualified.csv.",
             "",
             "Data-quality issues:",
@@ -882,13 +969,13 @@ def main(argv: list[str] | None = None) -> int:
         season_diagnostics.append(diagnostics)
     observations, issues = collapse_player_seasons(all_records)
     target_season = max(seasons)
-    league_averages = _league_averages(observations)
+    position_q25s = _position_q25s(observations)
     for season in seasons:
         for side in SIDES:
-            if (season, side) not in league_averages:
+            if (season, side, "") not in position_q25s:
                 issues.append(
-                    f"{season} {side}: no qualified player-seasons to form a league "
-                    "average; unqualified fallback is 0."
+                    f"{season} {side}: no qualified player-seasons to form a "
+                    "same-side fallback; unqualified season values use 0."
                 )
     if any(info["metric_unit_conversion"] == "divide by 100" for info in season_diagnostics):
         if any(info["metric_unit_conversion"] == "none" for info in season_diagnostics):
@@ -907,14 +994,32 @@ def main(argv: list[str] | None = None) -> int:
         print("\nPreview only: no output files were written.")
         return 0
 
-    final, worked = _primary_output(observations, league_averages, target_season)
+    final, worked = _primary_output(observations, position_q25s, target_season)
     nonempty_ids = final.loc[final["player_id"].ne(""), "player_id"]
     if nonempty_ids.duplicated().any():
         raise ValueError("Internal validation failed: duplicate player IDs in final output")
     sensitivity, sensitivity_summary = _sensitivity(
-        observations, league_averages, target_season
+        observations, position_q25s, target_season
     )
     examples, selected_examples = _examples(worked)
+    side_fallbacks = int(
+        worked.loc[~worked["qualified"], "fallback_position_group"].eq("SIDE").sum()
+    )
+    zero_fallbacks = int(
+        worked.loc[
+            ~worked["qualified"], "fallback_position_group"
+        ].eq("ZERO_NO_QUALIFIED").sum()
+    )
+    if side_fallbacks:
+        issues.append(
+            f"{side_fallbacks} unqualified player-season(s) lacked a qualified "
+            "same-position group and used the same-side seasonal 25th percentile."
+        )
+    if zero_fallbacks:
+        issues.append(
+            f"{zero_fallbacks} unqualified player-season(s) had no qualified "
+            "same-side or same-position comparison and used a fallback value of 0."
+        )
     primarily_unqualified = final[
         final["percentage_of_weight_from_unqualified_seasons"] > 50
     ].copy()

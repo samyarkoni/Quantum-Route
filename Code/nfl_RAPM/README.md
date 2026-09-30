@@ -117,12 +117,18 @@ python3 Code/nfl_RAPM/aggregate_rapm_years.py \
 The aggregator emits one `final_RAPM` per player, using only that player's
 primary side (the side with more observed plays across supplied seasons). It
 never adds offensive and defensive ratings; any opposite-side records are
-excluded from the final value and reported in diagnostic columns. It prints the
-weighting formula and an auditable worked example before writing files. Use
-`--preview-only` to inspect the formula without creating outputs. Results include
-the player-level CSV, season-by-season calculations, examples, input diagnostics,
-half-life and sample-weight sensitivity analyses, and a summary report. Verify
-the calculation logic with:
+excluded from the final value and reported in diagnostic columns. For any
+unqualified season (<200 plays), the observed RAPM is replaced by the
+same-season, same-side, same-position-group 25th percentile among qualified
+players. If that position group has no qualified players, it falls back to the
+same-side seasonal 25th percentile; if that is unavailable too, it uses zero.
+The unqualified season retains a capped low sample weight.
+
+It prints the weighting formula and an auditable worked example before writing
+files. Use `--preview-only` to inspect the formula without creating outputs.
+Results include the player-level CSV, season-by-season calculations, examples,
+input diagnostics, half-life and sample-weight sensitivity analyses, and a
+summary report. Verify the calculation logic with:
 
 ```sh
 python3 Code/nfl_RAPM/aggregate_rapm_years.py --selftest
