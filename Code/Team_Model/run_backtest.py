@@ -1,6 +1,7 @@
 """Walk-forward backtest: for each week, fit on games played before it, then simulate that week.
 
-    python run_backtest.py 2025          # one season -> Data/Team_Model/backtest_2025.csv
+    python run_backtest.py 2025 [note]   # one season -> Data/Team_Model/backtest_2025.csv,
+                                         # and a new run in the backtest history (Code/db.py)
     python run_backtest.py report        # score every saved season against the closing lines
 """
 import math
@@ -11,13 +12,18 @@ import zlib
 import numpy as np
 import pandas as pd
 
-from data import OUTPUT_DIR, load_epa_plays, load_games
+from data import CODE_DIR, OUTPUT_DIR, load_epa_plays, load_games
 from game_sim import GamePredictor
 
+sys.path.insert(0, str(CODE_DIR))
+import db  # noqa: E402
 
-def backtest_season(season, first_week=1):
+
+def backtest_season(season, first_week=1, note=None):
     plays, games = load_epa_plays(), load_games()
     season_games = games[games["season"] == season]
+    run_id = db.start_run(season, first_week, note)
+    print(f"backtest run {run_id}", flush=True)
     rows = []
     for week in sorted(season_games["week"].unique()):
         if week < first_week:
@@ -34,6 +40,8 @@ def backtest_season(season, first_week=1):
                          "result": g.result, "total": g.total, **pred})
         print(f"{season} week {week}: {time.time() - start:.0f}s", flush=True)
         pd.DataFrame(rows).to_csv(OUTPUT_DIR / f"backtest_{season}.csv", index=False)
+        db.save_predictions(run_id, [r for r in rows if r["week"] == week])
+    db.finish_run(run_id)
 
 
 def implied_probability(moneyline):
@@ -94,4 +102,4 @@ if __name__ == "__main__":
     if sys.argv[1] == "report":
         report()
     else:
-        backtest_season(int(sys.argv[1]))
+        backtest_season(int(sys.argv[1]), note=" ".join(sys.argv[2:]) or None)
