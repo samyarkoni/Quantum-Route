@@ -4,14 +4,20 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from nfl_RAPM import eligible_participants, fit_rapm, load_plays
+from nfl_RAPM import (
+    _low_leverage_band,
+    eligible_participants,
+    fit_rapm,
+    load_plays,
+)
 
 
 FIELDS = [
     "season", "game_id", "play_id", "play_type", "yards_gained", "starting_yard",
     "down", "yds_to_go", "offense_player_ids", "offense_player_names",
     "defense_player_ids", "defense_player_names", "rusher_position",
-    "rushing_player_type",
+    "rushing_player_type", "qtr", "game_seconds_remaining",
+    "time_on_clock_start", "home_team_score", "away_team_score",
 ]
 
 
@@ -24,6 +30,8 @@ def row(play_id, play_type="run", yards="4", offense="o1;o2", defense="d1;d2",
         "yards_gained": yards, "starting_yard": "50", "down": "1", "yds_to_go": "10",
         "offense_player_ids": offense, "offense_player_names": "Off One;Off Two",
         "defense_player_ids": defense, "defense_player_names": "Def One;Def Two",
+        "qtr": "4", "time_on_clock_start": "15:00",
+        "home_team_score": "0", "away_team_score": "0",
     })
     values.update(extra)
     return values
@@ -97,6 +105,31 @@ class FootballRAPMTests(unittest.TestCase):
         player = next(item for item in result.rows if item["player_id"] == "o1")
         self.assertEqual((player["team"], player["position"]), ("ATL", "RB"))
         self.assertTrue(player["player_metadata_found"])
+
+    def test_low_leverage_thresholds_and_more_than_30_minutes(self):
+        self.assertIsNone(_low_leverage_band(1801))
+        self.assertEqual(_low_leverage_band(1800), ("30:00-15:00", 21))
+        self.assertEqual(_low_leverage_band(1799), ("30:00-15:00", 21))
+        self.assertEqual(_low_leverage_band(899), ("15:00-10:00", 17))
+        self.assertEqual(_low_leverage_band(599), ("10:00-5:00", 14))
+        self.assertEqual(_low_leverage_band(299), ("5:00-3:00", 10))
+        self.assertEqual(_low_leverage_band(179), ("3:00-0:00", 9))
+
+    def test_filter_uses_preplay_score_and_reports_exclusions(self):
+        touchdown = row(
+            "1", season="2024", qtr="4", time_on_clock_start="02:00",
+            home_team_score="21", away_team_score="0",
+        )
+        later = row(
+            "2", season="2024", qtr="4", time_on_clock_start="01:50",
+            home_team_score="21", away_team_score="0",
+        )
+        with patch("nfl_RAPM.load_roster_metadata", return_value={}):
+            result = fit_rapm(self.write([touchdown, later]), season=2024)
+        self.assertEqual(result.diagnostics.excluded_low_leverage_plays, 1)
+        self.assertEqual(result.diagnostics.low_leverage_by_band["3:00-0:00"], 1)
+        self.assertTrue(result.rows)
+        self.assertEqual({entry["model_plays"] for entry in result.rows}, {1})
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -43,6 +44,9 @@ class Diagnostics:
     excluded_missing_participants: int = 0
     excluded_other_seasons: int = 0
     player_metadata_missing: list[str] = field(default_factory=list)
+    excluded_low_leverage_plays: int = 0
+    low_leverage_by_band: Counter = field(default_factory=Counter)
+    low_leverage_state_missing: int = 0
 
 
 @dataclass
@@ -127,6 +131,91 @@ def _number(row: Mapping[str, object], column: str) -> float | None:
         return value if math.isfinite(value) else None
     except (TypeError, ValueError):
         return None
+
+
+def _clock_seconds(value: object) -> int | None:
+    match = re.fullmatch(r"\s*(\d{1,2}):([0-5]\d)\s*", str(value or ""))
+    if match is None:
+        return None
+    return int(match.group(1)) * 60 + int(match.group(2))
+
+
+def _game_seconds_remaining(row: Mapping[str, object], quarter: int | None) -> int | None:
+    if quarter is None or quarter > 4 or quarter < 1:
+        return None
+    provided = _number(row, "game_seconds_remaining")
+    if provided is not None:
+        return int(provided)
+    clock = _clock_seconds(row.get("time_on_clock_start"))
+    if clock is None:
+        return None
+    return (4 - quarter) * 900 + clock
+
+
+def _low_leverage_band(seconds_remaining: int) -> tuple[str, int] | None:
+    """Return the supplied time band and minimum lead, or None outside its range."""
+    if seconds_remaining > 1800:
+        return None
+    if seconds_remaining >= 900:
+        return "30:00-15:00", 21
+    if seconds_remaining >= 600:
+        return "15:00-10:00", 17
+    if seconds_remaining >= 300:
+        return "10:00-5:00", 14
+    if seconds_remaining >= 180:
+        return "5:00-3:00", 10
+    if seconds_remaining >= 0:
+        return "3:00-0:00", 9
+    return None
+
+
+def _preplay_game_state(
+    plays: Sequence[Mapping[str, object]],
+) -> dict[tuple[str, str], tuple[int | None, float | None, bool]]:
+    """Compute remaining regulation time and score differential before each play."""
+    grouped: dict[str, list[Mapping[str, object]]] = defaultdict(list)
+    for row in plays:
+        grouped[str(row.get("game_id", ""))].append(row)
+
+    states: dict[tuple[str, str], tuple[int | None, float | None, bool]] = {}
+    for game_id, game_plays in grouped.items():
+        def play_order(row: Mapping[str, object]) -> tuple[int, float | str]:
+            try:
+                return 0, float(str(row.get("play_id", "")))
+            except ValueError:
+                return 1, str(row.get("play_id", ""))
+
+        quarter = 1
+        home_score = 0.0
+        away_score = 0.0
+        scores_available = any(
+            _number(row, "home_team_score") is not None
+            and _number(row, "away_team_score") is not None
+            for row in game_plays
+        )
+        for row in sorted(game_plays, key=play_order):
+            marker = re.fullmatch(r"start_quarter_(\d+)", str(row.get("play_type", "")))
+            if marker:
+                quarter = int(marker.group(1))
+            supplied_quarter = _number(row, "qtr")
+            if supplied_quarter is not None:
+                quarter = int(supplied_quarter)
+
+            seconds = _game_seconds_remaining(row, quarter)
+            gap = abs(home_score - away_score)
+            states[(game_id, str(row.get("play_id", "")))] = (
+                seconds,
+                gap if scores_available and math.isfinite(gap) else None,
+                quarter <= 4,
+            )
+
+            current_home = _number(row, "home_team_score")
+            current_away = _number(row, "away_team_score")
+            if current_home is not None:
+                home_score = current_home
+            if current_away is not None:
+                away_score = current_away
+    return states
 
 
 def _is_qb(row: Mapping[str, object]) -> bool:
@@ -260,12 +349,14 @@ def fit_rapm(
     control_names = sorted({
         name for row in plays for name, _ in _control_values(row)
     })
+    preplay_state = _preplay_game_state(plays)
     notes = [
         "Coefficients are adjusted associations with yards_gained, not causal effects.",
         "field_players excludes configured quarterback IDs from non-QB runs; absent IDs cannot be inferred from names.",
         "Every listed participant is treated as on the field; the source cannot resolve inactive/listing errors.",
         f"Controls are pre-play numeric fields only: {', '.join(control_names)}."
         if control_names else "No pre-play controls were observed.",
+        "Low-leverage plays are excluded using the absolute pre-play score lead and the documented game-clock thresholds.",
     ]
     for row in plays:
         row_season = str(row.get("season", "")).strip()
@@ -279,6 +370,20 @@ def fit_rapm(
         if play_type in SPECIAL_TEAMS_TYPES or play_type not in SCRIMMAGE_TYPES:
             diagnostics.excluded_play_types[play_type] += 1
             continue
+        seconds_remaining, lead, in_regulation = preplay_state.get(
+            (str(row.get("game_id", "")), str(row.get("play_id", ""))),
+            (None, None, True),
+        )
+        band = (
+            _low_leverage_band(seconds_remaining)
+            if in_regulation and seconds_remaining is not None else None
+        )
+        if band is not None and lead is not None and lead >= band[1]:
+            diagnostics.excluded_low_leverage_plays += 1
+            diagnostics.low_leverage_by_band[band[0]] += 1
+            continue
+        if in_regulation and (seconds_remaining is None or lead is None):
+            diagnostics.low_leverage_state_missing += 1
         target = _number(row, "yards_gained")
         offense, defense = eligible_participants(row, policy, quarterback_ids)
         if target is None:
@@ -349,9 +454,18 @@ def main() -> None:
     parser.add_argument("--ridge", type=float, default=10.0)
     parser.add_argument("--policy", choices=("field_players", "all_listed"), default="field_players")
     args = parser.parse_args()
-    fit_rapm(
+    result = fit_rapm(
         args.input_dir, ridge=args.ridge, policy=args.policy, season=args.season
-    ).to_csv(args.output)
+    )
+    result.to_csv(args.output)
+    print(f"Excluded {result.diagnostics.excluded_low_leverage_plays} low-leverage plays.")
+    for band, count in sorted(result.diagnostics.low_leverage_by_band.items()):
+        print(f"  {band}: {count}")
+    if result.diagnostics.low_leverage_state_missing:
+        print(
+            f"Low-leverage state unavailable for "
+            f"{result.diagnostics.low_leverage_state_missing} scrimmage plays; those plays were retained."
+        )
 
 
 if __name__ == "__main__":

@@ -13,6 +13,17 @@ numeric fields observed before the play (`starting_yard`, `down`, `yds_to_go`,
 and available personnel/box counts). Outcome, ending-yard, score, and clock
 fields are not predictors.
 
+By default, plays are excluded as low leverage when the pre-play score lead is
+at least the configured table threshold: 21 points with 30:00–15:00 remaining,
+17 with 15:00–10:00, 14 with 10:00–5:00, 10 with 5:00–3:00, and 9 with 3:00–0:00.
+More than 30:00 remaining and overtime are outside these bands. Scores are
+carried forward from the previous play because the participation files store
+the current play's cumulative score; clock time comes from
+`game_seconds_remaining` when available, otherwise quarter plus
+`time_on_clock_start`. If score or clock state is missing, the play is retained
+and counted in `low_leverage_state_missing`. CLI runs print exclusion counts by
+band.
+
 The default `field_players` policy treats every listed player as on the field,
 but removes configured quarterback IDs from ordinary running-back runs. QB runs
 (identified by `rusher_position` or `rushing_player_type` containing `qb`, as
