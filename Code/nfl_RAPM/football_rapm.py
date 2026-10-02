@@ -422,6 +422,13 @@ def _low_leverage_band(seconds_remaining: int) -> tuple[str, int] | None:
     return None
 
 
+def _text_or_empty(value: object) -> str:
+    """Convert scalar pandas values to text without boolean-testing pd.NA."""
+    if value is None or pd.isna(value):
+        return ""
+    return str(value)
+
+
 def _low_leverage_filter(
     data: pd.DataFrame,
 ) -> tuple[pd.Series, dict[str, int], int]:
@@ -449,7 +456,7 @@ def _low_leverage_filter(
         away_score = 0.0
         quarter = 1
         for index, row in game.iterrows():
-            play_type = str(row.get("play_type") or "").strip().lower()
+            play_type = _text_or_empty(row.get("play_type")).strip().lower()
             marker = re.fullmatch(r"start_quarter_(\d+)", play_type)
             if marker:
                 quarter = int(marker.group(1))
@@ -465,7 +472,7 @@ def _low_leverage_filter(
             if pd.isna(seconds):
                 clock_match = re.fullmatch(
                     r"\s*(\d{1,2}):([0-5]\d)\s*",
-                    str(row.get("time_on_clock_start") or ""),
+                    _text_or_empty(row.get("time_on_clock_start")),
                 )
                 if clock_match and 1 <= quarter <= 4:
                     clock_seconds = int(clock_match.group(1)) * 60 + int(clock_match.group(2))
@@ -1747,6 +1754,22 @@ def _run_selftest() -> None:
     assert leverage_excluded.tolist() == [False, True]
     assert leverage_bands == {"3:00-0:00": 1}
     assert leverage_missing == 0
+    missing_leverage_row = pd.DataFrame(
+        [
+            {
+                "game_id": "2024_01_H_A",
+                "play_id": "3",
+                "play_type": pd.NA,
+                "qtr": pd.NA,
+                "time_on_clock_start": pd.NA,
+                "home_team_score": pd.NA,
+                "away_team_score": pd.NA,
+            }
+        ]
+    )
+    missing_excluded, _, missing_count = _low_leverage_filter(missing_leverage_row)
+    assert missing_excluded.tolist() == [False]
+    assert missing_count == 0
 
     expected = {10: 10, 15: 15, 23: 15, 55: 15, -18: -15, -40: -15}
     for value, result in expected.items():
