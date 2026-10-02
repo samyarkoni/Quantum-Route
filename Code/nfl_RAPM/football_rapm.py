@@ -405,6 +405,99 @@ def _score_differential(data: pd.DataFrame) -> pd.Series:
     return result
 
 
+def _low_leverage_band(seconds_remaining: int) -> tuple[str, int] | None:
+    """Return the user-specified regulation time band and minimum lead."""
+    if seconds_remaining > 1800:
+        return None
+    if seconds_remaining >= 900:
+        return "30:00-15:00", 21
+    if seconds_remaining >= 600:
+        return "15:00-10:00", 17
+    if seconds_remaining >= 300:
+        return "10:00-5:00", 14
+    if seconds_remaining >= 180:
+        return "5:00-3:00", 10
+    if seconds_remaining >= 0:
+        return "3:00-0:00", 9
+    return None
+
+
+def _low_leverage_filter(
+    data: pd.DataFrame,
+) -> tuple[pd.Series, dict[str, int], int]:
+    """Mark low-leverage rows from pre-play regulation score and clock state."""
+    excluded = pd.Series(False, index=data.index)
+    by_band: Counter[str] = Counter()
+    missing_state = 0
+    required_scores = {"home_team_score", "away_team_score"}
+    if not required_scores.issubset(data.columns):
+        return excluded, {}, 0
+
+    for _, game in data.groupby("game_id", sort=False, dropna=False):
+        game = game.copy()
+        try:
+            game["_play_order"] = pd.to_numeric(game["play_id"], errors="raise")
+        except (TypeError, ValueError):
+            game["_play_order"] = game["play_id"].astype(str)
+        game = game.sort_values("_play_order", kind="stable")
+
+        scores_available = (
+            pd.to_numeric(game["home_team_score"], errors="coerce").notna()
+            & pd.to_numeric(game["away_team_score"], errors="coerce").notna()
+        ).any()
+        home_score = 0.0
+        away_score = 0.0
+        quarter = 1
+        for index, row in game.iterrows():
+            play_type = str(row.get("play_type") or "").strip().lower()
+            marker = re.fullmatch(r"start_quarter_(\d+)", play_type)
+            if marker:
+                quarter = int(marker.group(1))
+            explicit_quarter = pd.to_numeric(
+                pd.Series([row.get("qtr")]), errors="coerce"
+            ).iloc[0]
+            if pd.notna(explicit_quarter):
+                quarter = int(explicit_quarter)
+
+            seconds = pd.to_numeric(
+                pd.Series([row.get("game_seconds_remaining")]), errors="coerce"
+            ).iloc[0]
+            if pd.isna(seconds):
+                clock_match = re.fullmatch(
+                    r"\s*(\d{1,2}):([0-5]\d)\s*",
+                    str(row.get("time_on_clock_start") or ""),
+                )
+                if clock_match and 1 <= quarter <= 4:
+                    clock_seconds = int(clock_match.group(1)) * 60 + int(clock_match.group(2))
+                    seconds = (4 - quarter) * 900 + clock_seconds
+
+            regulation = 1 <= quarter <= 4
+            band = _low_leverage_band(int(seconds)) if pd.notna(seconds) and regulation else None
+            if band is not None and scores_available:
+                lead = abs(home_score - away_score)
+                if lead >= band[1]:
+                    excluded.at[index] = True
+                    by_band[band[0]] += 1
+            elif (
+                regulation
+                and play_type in {"run", "rush", "pass"}
+                and (pd.isna(seconds) or not scores_available)
+            ):
+                missing_state += 1
+
+            current_home = pd.to_numeric(
+                pd.Series([row.get("home_team_score")]), errors="coerce"
+            ).iloc[0]
+            current_away = pd.to_numeric(
+                pd.Series([row.get("away_team_score")]), errors="coerce"
+            ).iloc[0]
+            if pd.notna(current_home):
+                home_score = float(current_home)
+            if pd.notna(current_away):
+                away_score = float(current_away)
+    return excluded, dict(by_band), missing_state
+
+
 def clean_plays(
     data: pd.DataFrame, cap: float, use_score: bool
 ) -> tuple[pd.DataFrame, dict[str, int], float]:
@@ -412,6 +505,8 @@ def clean_plays(
     _print_data_checks(data)
     play_type = data["play_type"].fillna("").str.strip().str.lower()
     keep_type = play_type.isin({"run", "rush", "pass"})
+    low_leverage, low_leverage_by_band, low_leverage_state_missing = _low_leverage_filter(data)
+    low_leverage = low_leverage & keep_type
     missing_play_type = data["play_type"].isna() | play_type.eq("")
     yards = pd.to_numeric(data["yards_gained"], errors="coerce")
     has_yards = yards.notna() & np.isfinite(yards)
@@ -423,7 +518,12 @@ def clean_plays(
         "unsupported_play_type": int((~keep_type & ~missing_play_type).sum()),
         "missing_or_nonfinite_yards": int((keep_type & ~has_yards).sum()),
         "missing_player_lists": int((keep_type & has_yards & ~has_players).sum()),
+        "low_leverage": int(low_leverage.sum()),
+        "low_leverage_state_missing": low_leverage_state_missing,
     }
+    dropped.update({
+        f"low_leverage_{band}": count for band, count in low_leverage_by_band.items()
+    })
     mismatch_rate = float("nan")
     if {"starting_yard", "ending_yard"}.issubset(data.columns):
         starting = pd.to_numeric(data["starting_yard"], errors="coerce")
@@ -438,8 +538,9 @@ def clean_plays(
                 "Starting/ending yardage absolute-distance mismatch rate (1-yard tolerance): %.1f%%",
                 100 * mismatch_rate,
             )
+    LOG.info("Low-leverage exclusions by time band: %s", low_leverage_by_band)
     LOG.info("Dropped rows: %s", dropped)
-    cleaned = data.loc[keep_type & has_yards & has_players].copy()
+    cleaned = data.loc[keep_type & ~low_leverage & has_yards & has_players].copy()
     cleaned["play_type"] = np.where(
         cleaned["play_type"].str.strip().str.lower().isin({"run", "rush"}), "rush", "pass"
     )
@@ -1618,6 +1719,35 @@ def run_analysis(args: argparse.Namespace) -> None:
 
 def _run_selftest() -> None:
     """Exercise normalization, sign recovery, and deterministic seeded fitting."""
+    assert _low_leverage_band(1801) is None
+    assert _low_leverage_band(1800) == ("30:00-15:00", 21)
+    assert _low_leverage_band(900) == ("30:00-15:00", 21)
+    assert _low_leverage_band(899) == ("15:00-10:00", 17)
+    assert _low_leverage_band(600) == ("15:00-10:00", 17)
+    assert _low_leverage_band(599) == ("10:00-5:00", 14)
+    assert _low_leverage_band(300) == ("10:00-5:00", 14)
+    assert _low_leverage_band(299) == ("5:00-3:00", 10)
+    assert _low_leverage_band(180) == ("5:00-3:00", 10)
+    assert _low_leverage_band(179) == ("3:00-0:00", 9)
+    leverage_rows = pd.DataFrame(
+        [
+            {
+                "game_id": "2024_01_H_A", "play_id": "1", "play_type": "pass",
+                "qtr": "4", "time_on_clock_start": "02:59",
+                "home_team_score": "21", "away_team_score": "0",
+            },
+            {
+                "game_id": "2024_01_H_A", "play_id": "2", "play_type": "run",
+                "qtr": "4", "time_on_clock_start": "02:50",
+                "home_team_score": "21", "away_team_score": "0",
+            },
+        ]
+    )
+    leverage_excluded, leverage_bands, leverage_missing = _low_leverage_filter(leverage_rows)
+    assert leverage_excluded.tolist() == [False, True]
+    assert leverage_bands == {"3:00-0:00": 1}
+    assert leverage_missing == 0
+
     expected = {10: 10, 15: 15, 23: 15, 55: 15, -18: -15, -40: -15}
     for value, result in expected.items():
         assert normalize_yards(value) == result, (value, normalize_yards(value), result)

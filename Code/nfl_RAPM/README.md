@@ -86,6 +86,16 @@ situational baseline. Group-prior shrinkage can be disabled with
 scheme controls. The lambda grid accepts explicit values or a log-spaced range,
 such as `--lambda-grid 10:100000:9`.
 
+Low-leverage regulation plays are excluded before fitting using the absolute
+pre-play lead: at least 21 points from 30:00–15:00 remaining, 17 from 15:00–10:00,
+14 from 10:00–5:00, 10 from 5:00–3:00, and 9 from 3:00–0:00. Time beyond 30:00
+and overtime are not in these bands. The score fields are cumulative for each
+play, so filtering uses the prior play's score rather than a score made by the
+current play. Clock uses `game_seconds_remaining` when present, otherwise
+quarter and `time_on_clock_start`. When either score or clock state is
+unavailable, the play is kept and the missing-state count is written to
+`diagnostics.txt`; exclusion totals are also reported there by time band.
+
 Useful controls include `--folds`, `--max-passes`, `--tol`, `--cap`,
 `--min-plays`, `--min-carries`, and `--seed`. Yardage is hard-clipped to the
 range from -15 to +15 by default (`--cap 15`).
