@@ -79,9 +79,12 @@ python3 Code/nfl_RAPM/football_rapm.py --selftest
 ## Estimation and options
 
 Each fit selects penalties using game-grouped cross-validation of the reported
-pipeline: the same out-of-fold gradient-boosted situational baseline, joint
+pipeline: the same fold-local gradient-boosted situational baseline, joint
 offense/defense fit, offense/defense alternation, and position-group priors are
-used within each validation fold. `CV RMSE (full pipeline, grouped folds)` and
+used within each validation fold. The contextual baseline is fit once per fold
+and kept fixed during player fitting; this avoids retraining the comparatively
+expensive baseline for every candidate penalty and side-alternation pass.
+Progress through baseline folds and penalty candidates is logged. `CV RMSE (full pipeline, grouped folds)` and
 `CV RMSE (baseline-only)` in diagnostics use the same held-out games; the former
 scores the player model and baseline together, while the latter scores the
 baseline without player effects.
@@ -93,8 +96,8 @@ weaker offense shrinkage. Group-prior shrinkage can be disabled with
 `--no-group-priors`; `--scheme-controls` opts into the available pre-snap defensive
 scheme controls. Both candidate sets are selected together by grouped CV. The
 lambda grid accepts explicit values or a log-spaced range,
-such as `--lambda-grid 10:750:9`. By default, grouped cross-validation searches
-nine logarithmically spaced lambda values from 10 through 750; it selects the
+such as `--lambda-grid 10:750:5`. By default, grouped cross-validation searches
+five logarithmically spaced lambda values from 10 through 750; it selects the
 best candidate, so 750 is an upper bound on the default search rather than a
 forced lambda. An explicit `--lambda-grid` overrides those defaults. Use
 `--offense-penalty-ratios 0.25,0.5,1,2` to override the default ratio candidates.
@@ -136,8 +139,11 @@ the group target. Each game-cluster replicate refits the situational baseline an
 coefficients and reruns grouped CV to select lambda and the offense/defense
 penalty ratio. The intervals therefore reflect game-sampling and penalty
 selection variability, conditional on the chosen model specification and
-candidate grids. Bootstrap runs are more computationally expensive because
-each replicate repeats grouped CV.
+candidate grids. By default, each replicate reruns grouped penalty selection;
+use `--bootstrap-fixed-penalties` to reuse the full-data selected lambda and
+offense/defense penalty ratio. This faster option still resamples games and
+refits the contextual baseline and player coefficients, but does not include
+penalty-selection variability. Bootstrap progress is logged by replicate.
 
 ## Aggregate existing seasons
 
