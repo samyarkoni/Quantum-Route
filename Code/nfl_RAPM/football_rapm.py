@@ -10,7 +10,7 @@ import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Sequence
 
 import numpy as np
 import pandas as pd
@@ -45,7 +45,7 @@ POSITION_GROUPS = {
     "DB": {"CB", "S", "FS", "SS", "DB", "SAF"},
     "SPEC": {"K", "P", "LS"},
 }
-DEFAULT_LAMBDA_GRID = np.logspace(1, np.log10(750), 9).tolist()
+DEFAULT_LAMBDA_GRID = np.logspace(1, np.log10(750), 5).tolist()
 DEFAULT_LAMBDA_GRID[-1] = 750.0
 DEFAULT_OFFENSE_PENALTY_RATIOS = (0.5, 1.0, 2.0)
 
@@ -774,7 +774,12 @@ def _baseline_oof(
     for play_type in np.unique(play_types):
         rows = np.flatnonzero(play_types == play_type)
         row_set = set(rows.tolist())
-        for train_all, test_all in split_indices:
+        for fold_number, (train_all, test_all) in enumerate(split_indices):
+            LOG.info(
+                "Fitting contextual-baseline OOF fold %d/%d",
+                fold_number + 1,
+                len(split_indices),
+            )
             train = np.asarray([idx for idx in train_all if idx in row_set], dtype=int)
             test = np.asarray([idx for idx in test_all if idx in row_set], dtype=int)
             if not len(test):
@@ -847,6 +852,11 @@ def _nested_cv_baselines(
     validation_baselines = []
     play_types = frame["play_type"].to_numpy()
     for fold_number, (train, test) in enumerate(outer_splits):
+        LOG.info(
+            "Preparing contextual-baseline CV fold %d/%d",
+            fold_number + 1,
+            len(outer_splits),
+        )
         train_frame = frame.iloc[train].reset_index(drop=True)
         test_frame = frame.iloc[test].reset_index(drop=True)
         train_target = target[train]
@@ -919,12 +929,8 @@ def _ridge_fit(
 def _cross_validated_rmse(
     design: sparse.csr_matrix,
     target: np.ndarray,
-    frame: pd.DataFrame,
-    features: pd.DataFrame,
     columns: Sequence[tuple[str, str, str]],
     group_keys: Sequence[tuple[str, str, str]],
-    folds: int,
-    seed: int,
     validation_baselines: Sequence[
         tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
     ],
@@ -938,13 +944,7 @@ def _cross_validated_rmse(
         return float("nan")
     squared_error = 0.0
     observations = 0
-    for fold_number, (train, test, train_baseline, test_baseline) in enumerate(
-        validation_baselines
-    ):
-        train_frame = frame.iloc[train].reset_index(drop=True)
-        test_frame = frame.iloc[test].reset_index(drop=True)
-        train_features = features.iloc[train].reset_index(drop=True)
-        test_features = features.iloc[test].reset_index(drop=True)
+    for train, test, train_baseline, test_baseline in validation_baselines:
         train_design = design[train].tocsr()
         test_design = design[test].tocsr()
         train_counts = np.asarray((train_design != 0).sum(axis=0)).ravel().astype(float)
@@ -960,23 +960,6 @@ def _cross_validated_rmse(
         )
         train_baseline = train_baseline + intercept
         test_baseline = test_baseline + intercept
-        current_test_baseline = test_baseline.copy()
-
-        def refit_baseline(residual: np.ndarray, pass_number: int) -> np.ndarray:
-            nonlocal current_test_baseline
-            fold_seed = seed + fold_number * (max_passes + 1) + pass_number + 1
-            fitted_train = _baseline_predictions(
-                train_features, residual, train_frame, folds, fold_seed
-            )
-            current_test_baseline = _baseline_fit_predict(
-                train_features,
-                residual,
-                train_frame,
-                test_features,
-                test_frame,
-                fold_seed,
-            )
-            return fitted_train
 
         coefficients, _, _, _, _ = _alternate_sides(
             train_design,
@@ -992,9 +975,8 @@ def _cross_validated_rmse(
             initial_coefficients=joint_coefficients,
             log_iterations=False,
             offense_penalty_ratio=offense_penalty_ratio,
-            baseline_refit=refit_baseline if max_passes > 1 else None,
         )
-        prediction = current_test_baseline + np.asarray(test_design @ coefficients).ravel()
+        prediction = test_baseline + np.asarray(test_design @ coefficients).ravel()
         squared_error += float(np.square(target[test] - prediction).sum())
         observations += len(test)
     return math.sqrt(squared_error / observations) if observations else float("nan")
@@ -1045,7 +1027,6 @@ def _alternate_sides(
     initial_coefficients: np.ndarray | None = None,
     log_name: str = "fit",
     cv_rmse: float = float("nan"),
-    baseline_refit: Callable[[np.ndarray, int], np.ndarray] | None = None,
     log_iterations: bool = True,
     offense_penalty_ratio: float = 1.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int, float]:
@@ -1141,9 +1122,6 @@ def _alternate_sides(
         previous_defense_deviation = defense_deviation.copy()
         coefficients[offense_indices] = offense_beta
         coefficients[defense_indices] = defense_beta
-        if baseline_refit is not None:
-            residual = target - np.asarray(design @ coefficients).ravel()
-            baseline = baseline_refit(residual, pass_number)
         if passes > 1 and largest_change < tolerance:
             break
     coefficients[offense_indices] = offense_beta
@@ -1174,10 +1152,12 @@ def fit_model(
     y = frame["yards"].to_numpy(dtype=float)
     alpha = float(lambdas[len(lambdas) // 2])
     intercept_rmse = _intercept_cv_rmse(y, frame, folds)
+    LOG.info("%s: fitting out-of-fold contextual baseline", name)
     baseline_only = _baseline_predictions(features, y, frame, folds, seed)
     validation_baselines = _nested_cv_baselines(
         features, y, frame, folds, seed, type_means_only=False
     )
+    LOG.info("%s: fitting player effects across %d penalty combinations", name, len(lambdas) * len(offense_penalty_ratios))
     baseline_oof = np.full(len(y), np.nan, dtype=float)
     for _, test, _, test_baseline in validation_baselines:
         baseline_oof[test] = test_baseline
@@ -1186,17 +1166,15 @@ def fit_model(
     baseline_rmse = float(np.sqrt(np.mean(np.square(y - baseline_oof))))
 
     cv_scores = []
+    completed = 0
+    total_candidates = len(lambdas) * len(offense_penalty_ratios)
     for ratio in offense_penalty_ratios:
         for candidate in lambdas:
             score = _cross_validated_rmse(
                 design,
                 y,
-                frame,
-                features,
                 columns,
                 group_keys,
-                folds,
-                seed,
                 validation_baselines,
                 float(candidate),
                 float(ratio),
@@ -1205,6 +1183,17 @@ def fit_model(
                 group_priors,
             )
             cv_scores.append((score, float(candidate), float(ratio)))
+            completed += 1
+            LOG.info(
+                "%s grouped CV %d/%d: lambda=%.5g offense/defense ratio=%.5g "
+                "RMSE=%.4f",
+                name,
+                completed,
+                total_candidates,
+                candidate,
+                ratio,
+                score,
+            )
     finite_scores = [choice for choice in cv_scores if np.isfinite(choice[0])]
     if finite_scores:
         final_cv, alpha, offense_penalty_ratio = min(finite_scores)
@@ -1212,13 +1201,16 @@ def fit_model(
         final_cv = float("nan")
         offense_penalty_ratio = 1.0
         LOG.warning("%s: grouped CV unavailable; using lambda %.5g", name, alpha)
-    if alpha in {float(min(lambdas)), float(max(lambdas))}:
+    if len(lambdas) > 1 and alpha in {float(min(lambdas)), float(max(lambdas))}:
         LOG.warning(
             "%s selected an edge lambda (%.5g); consider widening --lambda-grid",
             name,
             alpha,
         )
-    if offense_penalty_ratio in {min(offense_penalty_ratios), max(offense_penalty_ratios)}:
+    if len(offense_penalty_ratios) > 1 and offense_penalty_ratio in {
+        min(offense_penalty_ratios),
+        max(offense_penalty_ratios),
+    }:
         LOG.warning(
             "%s selected an edge offense penalty ratio (%.5g); consider widening "
             "--offense-penalty-ratios",
@@ -1246,11 +1238,6 @@ def fit_model(
         final_cv,
     )
     if max_passes > 1:
-        def refit_baseline(residual: np.ndarray, pass_number: int) -> np.ndarray:
-            return _baseline_predictions(
-                features, residual, frame, folds, seed + pass_number + 1
-            )
-
         coefficients, targets, baseline, alternations, largest_change = _alternate_sides(
             design,
             y,
@@ -1265,7 +1252,6 @@ def fit_model(
             initial_coefficients=joint_coefficients,
             log_name=name,
             cv_rmse=final_cv,
-            baseline_refit=refit_baseline,
             offense_penalty_ratio=offense_penalty_ratio,
         )
     else:
@@ -1306,7 +1292,7 @@ def fit_model(
 
 
 def _bootstrap_fit(
-    result: FitResult, samples: int, seed: int
+    result: FitResult, samples: int, seed: int, fixed_penalties: bool = False
 ) -> dict[tuple[str, str, str], tuple[float, float, float, float]]:
     if samples <= 0:
         return {}
@@ -1319,6 +1305,13 @@ def _bootstrap_fit(
     raw_estimates: defaultdict[int, list[float]] = defaultdict(list)
     deviation_estimates: defaultdict[int, list[float]] = defaultdict(list)
     for bootstrap_number in range(samples):
+        LOG.info(
+            "%s bootstrap replicate %d/%d%s",
+            result.name,
+            bootstrap_number + 1,
+            samples,
+            " (fixed penalties)" if fixed_penalties else "",
+        )
         selected = rng.choice(unique_games, size=len(unique_games), replace=True)
         rows = np.concatenate([np.flatnonzero(games == game) for game in selected])
         target = result.frame["yards"].to_numpy(dtype=float)[rows]
@@ -1334,62 +1327,68 @@ def _bootstrap_fit(
             initial_coefficients = result.coefficients
             selected_lambda = result.lambda_value
             selected_offense_penalty_ratio = result.offense_penalty_ratio
-            baseline_refit = None
         else:
             replicate_seed = seed + bootstrap_number * (result.max_passes + 2)
-            validation_baselines = _nested_cv_baselines(
-                sampled_features,
-                target,
-                sampled_frame,
-                result.folds,
-                replicate_seed,
-                type_means_only=False,
-            )
-            scores = []
-            for penalty_ratio in result.offense_penalty_candidates:
-                for candidate in result.lambda_candidates:
-                    score = _cross_validated_rmse(
-                        matrix,
-                        target,
-                        sampled_frame,
-                        sampled_features,
-                        result.columns,
-                        result.group_keys,
-                        result.folds,
-                        replicate_seed,
-                        validation_baselines,
-                        candidate,
-                        penalty_ratio,
-                        result.max_passes,
-                        result.tolerance,
-                        result.group_priors_enabled,
-                    )
-                    scores.append((score, candidate, penalty_ratio))
-            finite_scores = [score for score in scores if np.isfinite(score[0])]
-            if finite_scores:
-                _, selected_lambda, selected_offense_penalty_ratio = min(finite_scores)
-            else:
-                LOG.warning(
-                    "%s bootstrap replicate %d: grouped CV unavailable; "
-                    "retaining full-data penalties",
-                    result.name,
-                    bootstrap_number + 1,
-                )
+            if fixed_penalties:
                 selected_lambda = result.lambda_value
                 selected_offense_penalty_ratio = result.offense_penalty_ratio
-            baseline = np.full(len(target), np.nan, dtype=float)
-            for _, test, _, test_baseline in validation_baselines:
-                baseline[test] = test_baseline
-            missing_baseline = np.isnan(baseline)
-            if missing_baseline.any():
-                baseline_fallback = _baseline_predictions(
+                baseline = _baseline_predictions(
                     sampled_features,
                     target,
                     sampled_frame,
                     result.folds,
-                    replicate_seed + result.folds + 1,
+                    replicate_seed,
                 )
-                baseline[missing_baseline] = baseline_fallback[missing_baseline]
+            else:
+                validation_baselines = _nested_cv_baselines(
+                    sampled_features,
+                    target,
+                    sampled_frame,
+                    result.folds,
+                    replicate_seed,
+                    type_means_only=False,
+                )
+                scores = []
+                for penalty_ratio in result.offense_penalty_candidates:
+                    for candidate in result.lambda_candidates:
+                        score = _cross_validated_rmse(
+                            matrix,
+                            target,
+                            result.columns,
+                            result.group_keys,
+                            validation_baselines,
+                            candidate,
+                            penalty_ratio,
+                            result.max_passes,
+                            result.tolerance,
+                            result.group_priors_enabled,
+                        )
+                        scores.append((score, candidate, penalty_ratio))
+                finite_scores = [score for score in scores if np.isfinite(score[0])]
+                if finite_scores:
+                    _, selected_lambda, selected_offense_penalty_ratio = min(finite_scores)
+                else:
+                    LOG.warning(
+                        "%s bootstrap replicate %d: grouped CV unavailable; "
+                        "retaining full-data penalties",
+                        result.name,
+                        bootstrap_number + 1,
+                    )
+                    selected_lambda = result.lambda_value
+                    selected_offense_penalty_ratio = result.offense_penalty_ratio
+                baseline = np.full(len(target), np.nan, dtype=float)
+                for _, test, _, test_baseline in validation_baselines:
+                    baseline[test] = test_baseline
+                missing_baseline = np.isnan(baseline)
+                if missing_baseline.any():
+                    baseline_fallback = _baseline_predictions(
+                        sampled_features,
+                        target,
+                        sampled_frame,
+                        result.folds,
+                        replicate_seed + result.folds + 1,
+                    )
+                    baseline[missing_baseline] = baseline_fallback[missing_baseline]
             penalty_factors = np.asarray([
                 selected_offense_penalty_ratio if column[0] == "offense" else 1.0
                 for column in result.columns
@@ -1401,17 +1400,6 @@ def _bootstrap_fit(
                 column_penalty_factors=penalty_factors,
             )
             baseline = baseline + intercept
-
-            def refit_baseline(residual: np.ndarray, pass_number: int) -> np.ndarray:
-                return _baseline_predictions(
-                    sampled_features,
-                    residual,
-                    sampled_frame,
-                    result.folds,
-                    seed + bootstrap_number * (result.max_passes + 1) + pass_number + 1,
-                )
-
-            baseline_refit = refit_baseline
         if result.max_passes > 1:
             sampled_counts = np.asarray((matrix != 0).sum(axis=0)).ravel().astype(float)
             full, targets, _, _, _ = _alternate_sides(
@@ -1429,7 +1417,6 @@ def _bootstrap_fit(
                 log_name=f"{result.name} bootstrap",
                 log_iterations=False,
                 offense_penalty_ratio=selected_offense_penalty_ratio,
-                baseline_refit=baseline_refit,
             )
         else:
             full = initial_coefficients
@@ -1666,11 +1653,12 @@ def _split_half_reliability(
             counts,
             result.group_keys,
             result.lambda_value,
-            max_passes=6,
-            tolerance=0.001,
+            max_passes=max(0, result.max_passes - 1),
+            tolerance=result.tolerance,
             group_priors=result.group_priors_enabled,
             log_name=f"{result.name} split-half",
             log_iterations=False,
+            offense_penalty_ratio=result.offense_penalty_ratio,
         )
         deviations.append(coefficients - targets)
         counts_by_half.append(counts)
@@ -1859,7 +1847,12 @@ def run_analysis(args: argparse.Namespace) -> None:
                 args.seed,
                 args.offense_penalty_ratios,
             )
-            result.bootstrap = _bootstrap_fit(result, args.bootstrap, args.seed + 100)
+            result.bootstrap = _bootstrap_fit(
+                result,
+                args.bootstrap,
+                args.seed + 100,
+                fixed_penalties=args.bootstrap_fixed_penalties,
+            )
         results.append(result)
     result_by_name = {result.name: result for result in results}
     outdir = Path(args.outdir)
@@ -1966,7 +1959,12 @@ def _run_selftest() -> None:
     default_args = build_parser().parse_args(["--input", "plays.csv"])
     assert default_args.tol == 0.001
     assert np.isclose(default_args.lambda_grid[-1], 750.0)
+    assert len(default_args.lambda_grid) == 5
     assert max(default_args.lambda_grid) <= 750.0
+    assert not default_args.bootstrap_fixed_penalties
+    assert build_parser().parse_args(
+        ["--input", "plays.csv", "--bootstrap-fixed-penalties"]
+    ).bootstrap_fixed_penalties
     assert _low_leverage_band(1801) is None
     assert _low_leverage_band(1800) == ("30:00-15:00", 21)
     assert _low_leverage_band(900) == ("30:00-15:00", 21)
@@ -2267,7 +2265,9 @@ def _run_selftest() -> None:
     assert penalty_coefficients[0] > penalty_coefficients[1], (
         "weaker offense penalty did not retain a larger coefficient"
     )
-    bootstrap = _bootstrap_fit(pooled, samples=2, seed=seed + 200)
+    bootstrap = _bootstrap_fit(
+        pooled, samples=2, seed=seed + 200, fixed_penalties=True
+    )
     assert bootstrap, "bootstrap did not produce player intervals"
     assert any(
         not np.allclose(
@@ -2387,7 +2387,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--lambda-grid",
         type=_parse_lambda_grid,
         default=DEFAULT_LAMBDA_GRID,
-        help="Comma-separated lambda values or START:STOP:COUNT (default: 10:750:9)",
+        help="Comma-separated lambda values or START:STOP:COUNT (default: 10:750:5)",
     )
     parser.add_argument(
         "--offense-penalty-ratios",
@@ -2410,6 +2410,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-plays", type=int, default=100)
     parser.add_argument("--min-carries", type=int, default=30)
     parser.add_argument("--bootstrap", type=int, default=0, help="Game-cluster bootstrap replicates")
+    parser.add_argument(
+        "--bootstrap-fixed-penalties",
+        action="store_true",
+        help=(
+            "Keep full-data CV-selected penalties fixed in bootstrap replicates "
+            "instead of rerunning grouped penalty selection"
+        ),
+    )
     parser.add_argument(
         "--export-expectations",
         action="store_true",
