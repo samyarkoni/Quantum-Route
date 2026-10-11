@@ -10,16 +10,88 @@ from __future__ import annotations
 import argparse
 import csv
 from collections import defaultdict
+from functools import lru_cache
 from pathlib import Path
 import re
 from typing import TextIO
 
+import nflreadpy as nfl
+
 
 DEFAULT_INPUT_DIR = Path(__file__).resolve().parents[2] / "GAMES"
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "TEAM_PARTICIPATION_STATS"
+PLAY_METADATA_COLUMNS = [
+    "pos_team",
+    "rusher_player_id",
+    "rusher_player_name",
+    "rusher_position",
+    "rushing_player_type",
+]
 GAME_ID_PATTERN = re.compile(
     r"^(?P<season>\d{4})_(?P<week>\d{1,2})_(?P<first_team>[A-Z]{2,3})_(?P<second_team>[A-Z]{2,3})$"
 )
+
+
+@lru_cache(maxsize=8)
+def _load_rushing_data(season: int) -> dict[tuple[str, int], dict[str, str]]:
+    pbp = nfl.load_pbp(seasons=[season])
+    player_data = nfl.load_players()
+    required_columns = {
+        "game_id",
+        "play_id",
+        "rusher_player_id",
+        "rusher_player_name",
+        "rush_attempt",
+    }
+    missing_columns = required_columns.difference(pbp.columns)
+    if missing_columns:
+        raise ValueError(
+            "Play-by-play data is missing required rushing fields: "
+            + ", ".join(sorted(missing_columns))
+        )
+
+    positions_by_player = {
+        row["gsis_id"]: (row["position"] or row["position_group"] or "").upper()
+        for row in player_data.select(
+            ["gsis_id", "position", "position_group"]
+        ).to_dicts()
+        if row["gsis_id"]
+    }
+    rushing_data: dict[tuple[str, int], dict[str, str]] = {}
+    for row in pbp.select(
+        [
+            "game_id",
+            "play_id",
+            "rusher_player_id",
+            "rusher_player_name",
+            "rush_attempt",
+        ]
+    ).to_dicts():
+        if row["play_id"] is None:
+            continue
+        player_id = row["rusher_player_id"] or ""
+        position = positions_by_player.get(player_id, "")
+        if player_id and position == "QB":
+            player_type = "quarterback"
+        elif player_id and position in {"RB", "FB"}:
+            player_type = "running_back"
+        elif player_id:
+            player_type = "other"
+        elif row["rush_attempt"]:
+            player_type = "unknown"
+        else:
+            player_type = "not_rushing"
+
+        key = (row["game_id"], int(row["play_id"]))
+        if key in rushing_data:
+            raise ValueError(f"Duplicate play-by-play rushing record for {key}")
+        rushing_data[key] = {
+            "rusher_player_id": player_id,
+            "rusher_player_name": row["rusher_player_name"] or "",
+            "rusher_position": position,
+            "rushing_player_type": player_type,
+        }
+    return rushing_data
 
 
 def _game_metadata(game_id: str, season: str, week: str) -> tuple[str, str]:
@@ -102,6 +174,18 @@ def generate_team_participation_stats(
                 if not game_id:
                     raise ValueError(f"{game_file}:{row_number} has an empty game_id")
                 first_team, second_team = _game_metadata(game_id, season, week)
+                try:
+                    play_id = int(float(row["play_id"]))
+                except (KeyError, TypeError, ValueError) as error:
+                    raise ValueError(
+                        f"{game_file}:{row_number} has an invalid play_id"
+                    ) from error
+                rushing_data = _load_rushing_data(int(season)).get((game_id, play_id))
+                if rushing_data is None:
+                    raise ValueError(
+                        f"No play-by-play rushing record found for "
+                        f"{game_id} play {play_id} ({game_file}:{row_number})"
+                    )
                 if game_teams is None:
                     game_teams = (first_team, second_team)
                 elif game_teams != (first_team, second_team):
@@ -121,6 +205,8 @@ def generate_team_participation_stats(
                             "team": team,
                             "opponent": opponent,
                             "team_role": role,
+                            "pos_team": row.get("posteam") or "",
+                            **rushing_data,
                         }
                     )
                     rows_by_team_year[(team, season)].append(enriched)
@@ -128,7 +214,14 @@ def generate_team_participation_stats(
     if source_columns is None:
         raise ValueError("No rows found in game CSV files")
 
-    metadata_columns = ["season", "week", "team", "opponent", "team_role"]
+    metadata_columns = [
+        "season",
+        "week",
+        "team",
+        "opponent",
+        "team_role",
+        *PLAY_METADATA_COLUMNS,
+    ]
     fieldnames = metadata_columns + [
         column for column in source_columns if column not in metadata_columns
     ]
