@@ -1,4 +1,4 @@
-push"""Estimate yards-only football RAPM ratings from play-by-play CSV files."""
+"""Estimate yards-only football RAPM ratings from play-by-play CSV files."""
 
 from __future__ import annotations
 
