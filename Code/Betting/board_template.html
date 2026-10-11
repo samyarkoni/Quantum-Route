@@ -1,0 +1,632 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quantum Route Board</title>
+<style>
+:root {
+  color-scheme: light;
+  --surface-0: #f4f3f0;
+  --surface-1: #fcfcfb;
+  --surface-2: #f0efec;
+  --border: #e2e0da;
+  --text-primary: #0b0b0b;
+  --text-secondary: #52514e;
+  --text-muted: #77756f;
+  --accent: #2a78d6;
+  --accent-ink: #1c5cab;
+  --series-1: #2a78d6;
+  --grid: #e8e6e1;
+  --good: #0ca30c;
+  --good-ink: #0a7a0a;
+  --critical: #d03b3b;
+  --critical-ink: #b02f2f;
+  --warning: #fab219;
+  --warning-bg: #fdf3dc;
+  --warning-ink: #7a5300;
+  --pick-bg: #eaf2fc;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --surface-0: #121211;
+    --surface-1: #1a1a19;
+    --surface-2: #242422;
+    --border: #383835;
+    --text-primary: #f0efec;
+    --text-secondary: #c3c2b7;
+    --text-muted: #9a998f;
+    --accent: #3987e5;
+    --accent-ink: #86b6ef;
+    --series-1: #3987e5;
+    --grid: #2e2e2b;
+    --good-ink: #4cc94c;
+    --critical-ink: #ef7d7d;
+    --warning-bg: #3a2f14;
+    --warning-ink: #f5cf7a;
+    --pick-bg: #1c2a3d;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --surface-0: #121211;
+  --surface-1: #1a1a19;
+  --surface-2: #242422;
+  --border: #383835;
+  --text-primary: #f0efec;
+  --text-secondary: #c3c2b7;
+  --text-muted: #9a998f;
+  --accent: #3987e5;
+  --accent-ink: #86b6ef;
+  --series-1: #3987e5;
+  --grid: #2e2e2b;
+  --good-ink: #4cc94c;
+  --critical-ink: #ef7d7d;
+  --warning-bg: #3a2f14;
+  --warning-ink: #f5cf7a;
+  --pick-bg: #1c2a3d;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--surface-0);
+  color: var(--text-primary);
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+.wrap { max-width: 1180px; margin: 0 auto; padding: 24px 16px 64px; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 24px; }
+h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
+h2 { font-size: 16px; margin: 0 0 12px; }
+.meta { color: var(--text-muted); font-size: 12px; }
+.num { font-variant-numeric: tabular-nums; }
+.banner {
+  margin: 16px 0 0; padding: 10px 14px; border-radius: 8px;
+  background: var(--warning-bg); color: var(--warning-ink); border: 1px solid color-mix(in srgb, var(--warning) 45%, transparent);
+  font-size: 13px;
+}
+.banner strong { font-weight: 600; }
+.controls {
+  position: sticky; top: 0; z-index: 5;
+  display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: end;
+  margin: 16px -16px 0; padding: 12px 16px;
+  background: color-mix(in srgb, var(--surface-0) 92%, transparent);
+  backdrop-filter: blur(6px);
+  border-bottom: 1px solid var(--border);
+}
+.control { display: flex; flex-direction: column; gap: 4px; }
+.control > span { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+select, input[type="number"], input[type="text"] {
+  font: inherit; color: var(--text-primary); background: var(--surface-1);
+  border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px;
+}
+select:focus-visible, input:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--surface-1); }
+.seg button {
+  font: inherit; font-size: 13px; border: 0; background: transparent; color: var(--text-secondary);
+  padding: 5px 10px; cursor: pointer;
+}
+.seg button + button { border-left: 1px solid var(--border); }
+.seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+.checks { display: flex; gap: 10px; flex-wrap: wrap; padding: 5px 0; }
+.checks label { display: inline-flex; gap: 5px; align-items: center; font-size: 13px; cursor: pointer; }
+.ev-input { width: 72px; }
+.card { background: var(--surface-1); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-top: 20px; }
+.card-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 4px 16px; margin-bottom: 12px; }
+.card-head h2 { margin: 0; }
+.slate { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+.chip {
+  display: inline-flex; gap: 6px; align-items: baseline; padding: 5px 10px; border-radius: 999px;
+  background: var(--pick-bg); color: var(--accent-ink); font-size: 13px; font-weight: 600;
+}
+.chip .num { font-weight: 500; color: var(--text-secondary); }
+.empty { color: var(--text-muted); font-size: 13px; }
+.scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+table { border-collapse: collapse; width: 100%; }
+th { text-align: left; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+td { padding: 8px; border-bottom: 1px solid var(--grid); vertical-align: middle; }
+tr:last-child td { border-bottom: 0; }
+td.r, th.r { text-align: right; }
+.games td { white-space: nowrap; }
+.matchup { font-weight: 600; }
+.sub { display: block; font-size: 12px; color: var(--text-muted); font-weight: 400; }
+.line-in { width: 64px; text-align: right; padding: 4px 6px; }
+.line-in.edited { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.pick { font-weight: 600; color: var(--accent-ink); }
+.pass { color: var(--text-muted); }
+.badge { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; font-weight: 600; }
+.badge svg { width: 12px; height: 12px; }
+.badge.win { color: var(--good-ink); }
+.badge.loss { color: var(--critical-ink); }
+.badge.push { color: var(--text-secondary); }
+.reset { font: inherit; font-size: 12px; background: none; border: 0; color: var(--accent-ink); cursor: pointer; padding: 0; text-decoration: underline; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 16px; }
+.tile { background: var(--surface-2); border-radius: 8px; padding: 10px 12px; }
+.tile .label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); }
+.tile .value { font-size: 22px; font-weight: 600; margin-top: 2px; }
+.tile .note { font-size: 12px; color: var(--text-muted); }
+.verdict { font-size: 13px; color: var(--text-secondary); margin: 0 0 14px; }
+.chart-wrap { position: relative; }
+.chart-wrap svg { display: block; width: 100%; height: 260px; overflow: visible; }
+.axis text { fill: var(--text-muted); font-size: 11px; }
+.tooltip {
+  position: absolute; pointer-events: none; z-index: 3; min-width: 180px;
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.12);
+  opacity: 0; transition: opacity 80ms;
+}
+.tooltip .t-title { font-weight: 600; margin-bottom: 2px; }
+.tooltip .t-row { display: flex; justify-content: space-between; gap: 12px; color: var(--text-secondary); }
+.tooltip .t-row b { color: var(--text-primary); font-weight: 600; }
+details { margin-top: 16px; }
+summary { cursor: pointer; font-weight: 600; font-size: 13px; color: var(--text-secondary); }
+.how { font-size: 13px; color: var(--text-secondary); max-width: 760px; }
+.how ol { padding-left: 20px; }
+.how li { margin: 4px 0; }
+.how code { font-size: 12px; background: var(--surface-2); padding: 1px 4px; border-radius: 4px; }
+.split { display: grid; grid-template-columns: 1fr; gap: 16px; }
+@media (min-width: 900px) { .split { grid-template-columns: 3fr 2fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Quantum Route betting board</h1>
+    <div class="meta" id="meta"></div>
+  </header>
+  <div class="banner" id="banner" hidden></div>
+
+  <div class="controls" role="group" aria-label="Pick rule">
+    <label class="control"><span>Week</span><select id="week"></select></label>
+    <div class="control"><span>Markets</span>
+      <div class="checks">
+        <label><input type="checkbox" data-market="spread" checked> Spread</label>
+        <label><input type="checkbox" data-market="total" checked> Total</label>
+        <label><input type="checkbox" data-market="moneyline"> Moneyline</label>
+      </div>
+    </div>
+    <label class="control"><span>Min edge (EV %)</span><input id="minEv" class="ev-input num" type="number" step="0.5" value="3"></label>
+    <div class="control"><span>Model margin</span>
+      <div class="seg" id="mode">
+        <button type="button" data-mode="raw" aria-pressed="false">Raw</button>
+        <button type="button" data-mode="cal" aria-pressed="true">Calibrated</button>
+      </div>
+    </div>
+    <label class="control"><span>Default juice</span><input id="juice" class="ev-input num" type="number" step="5" value="-110"></label>
+  </div>
+
+  <section class="card" aria-labelledby="week-title">
+    <div class="card-head">
+      <h2 id="week-title">Picks</h2>
+      <span class="meta" id="week-note"></span>
+    </div>
+    <div class="slate" id="slate"></div>
+    <div class="scroll">
+      <table class="games">
+        <thead><tr>
+          <th>Game</th>
+          <th class="r">Model score</th>
+          <th class="r" title="Home team's spread, sportsbook style (negative = home favored)">Home spread</th>
+          <th class="r">Total</th>
+          <th class="r">Home ML</th>
+          <th class="r">Away ML</th>
+          <th>Pick</th>
+          <th class="r">Win prob</th>
+          <th class="r">EV</th>
+          <th>Result</th>
+        </tr></thead>
+        <tbody id="games"></tbody>
+      </table>
+    </div>
+    <p class="meta" id="edit-note">Type your sportsbook's numbers into the line boxes; the pick updates instantly. Edited boxes are outlined. <button class="reset" id="reset" type="button">Reset this week's edits</button></p>
+  </section>
+
+  <section class="card" aria-labelledby="record-title">
+    <div class="card-head">
+      <h2 id="record-title">Track record of this rule</h2>
+      <span class="meta">Every graded game, closing lines, 1 unit per bet</span>
+    </div>
+    <div class="tiles" id="tiles"></div>
+    <p class="verdict" id="verdict"></p>
+    <div class="split">
+      <div>
+        <div class="meta" style="margin-bottom:6px">Cumulative units, in game order</div>
+        <div class="chart-wrap" id="chart-wrap">
+          <svg id="chart" role="img" aria-label="Cumulative units won by the rule over every graded bet"></svg>
+          <div class="tooltip" id="tooltip" role="status"></div>
+        </div>
+      </div>
+      <div class="scroll">
+        <table>
+          <thead><tr><th>Slice</th><th class="r">Bets</th><th class="r">W–L–P</th><th class="r">Hit</th><th class="r">Units</th><th class="r">ROI</th></tr></thead>
+          <tbody id="breakdown"></tbody>
+        </table>
+      </div>
+    </div>
+    <details>
+      <summary>Every graded bet (table view)</summary>
+      <div class="scroll" style="max-height:420px;margin-top:8px">
+        <table>
+          <thead><tr><th>Game</th><th>Pick</th><th class="r">Price</th><th class="r">Win prob</th><th class="r">EV</th><th>Result</th><th class="r">Units</th><th class="r">Running</th></tr></thead>
+          <tbody id="ledger"></tbody>
+        </table>
+      </div>
+    </details>
+  </section>
+
+  <section class="card how">
+    <h2>How a pick is made</h2>
+    <p>The same inputs always give the same pick. Simulations are seeded by game ID, and the rule below has no randomness or judgment.</p>
+    <ol>
+      <li><b>Model line.</b> The team model simulates each game about 400 times, fitting only on plays before that week, and gives a projected home margin <code>m</code> and total <code>t</code>. <b>Calibrated</b> multiplies <code>m</code> by the slope that maps model margins onto real ones (the model is too timid). That slope comes from the <i>other</i> backtested seasons, so a season never sees its own results.</li>
+      <li><b>Win probability.</b> Each outcome is treated as normal around the model line, with the spread of real misses from the other seasons. Home covers with <code>Φ((m − line)/σ)</code>, the over hits with <code>Φ((t − total)/σ<sub>t</sub>)</code> and home wins outright with <code>Φ(m/σ)</code>. Pushes are ignored.</li>
+      <li><b>Expected value.</b> <code>EV = p × (decimal odds − 1) − (1 − p)</code> per unit, using the listed price. Spreads and totals without a listed price, or with a line you have edited, use the default juice.</li>
+      <li><b>One choice.</b> Of the six bets on a game (both sides of each enabled market), take the highest EV. If it clears the minimum edge, bet it, otherwise pass. Ties go to spread, then total, then moneyline.</li>
+    </ol>
+    <p>A positive EV only means the model disagrees with the market. Use the track record above to judge whether those disagreements have made money.</p>
+  </section>
+</div>
+
+<script>
+const DATA = /*__BOARD_DATA__*/null;
+
+const MARKETS = ["spread", "total", "moneyline"];
+const MARKET_LABEL = { spread: "Spread", total: "Total", moneyline: "Moneyline" };
+const store = {
+  get(key, fallback) { try { const v = localStorage.getItem("qr-board:" + key); return v === null ? fallback : JSON.parse(v); } catch { return fallback; } },
+  set(key, value) { try { localStorage.setItem("qr-board:" + key, JSON.stringify(value)); } catch { /* storage unavailable */ } },
+};
+
+const state = {
+  mode: store.get("mode", "cal"),
+  markets: new Set(store.get("markets", ["spread", "total"])),
+  minEv: store.get("minEv", 3),
+  juice: store.get("juice", -110),
+  week: store.get("week", null),
+  edits: store.get("edits", {}),
+};
+
+// ---------- math ----------
+function erf(x) {
+  // Abramowitz-Stegun 7.1.26 (|error| < 1.5e-7)
+  const s = Math.sign(x); x = Math.abs(x);
+  const t = 1 / (1 + 0.3275911 * x);
+  const y = 1 - (((((1.061405429 * t - 1.453152027) * t) + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x);
+  return s * y;
+}
+const phi = z => 0.5 * (1 + erf(z / Math.SQRT2));
+const validOdds = o => o != null && isFinite(o) && Math.abs(o) >= 100;
+const decimal = o => o > 0 ? 1 + o / 100 : 1 + 100 / -o;
+const has = v => v != null && isFinite(v);
+
+function linesFor(g, useEdits) {
+  const e = (useEdits && state.edits[g.game_id]) || {};
+  const pick = (k) => (k in e ? e[k] : g[k]);
+  const edited = k => k in e && e[k] !== g[k];
+  const juice = validOdds(state.juice) ? state.juice : -110;
+  const price = (k, lineKey) => (!edited(lineKey) && validOdds(g[k])) ? g[k] : juice;
+  return {
+    spread_line: pick("spread_line"), total_line: pick("total_line"),
+    home_moneyline: pick("home_moneyline"), away_moneyline: pick("away_moneyline"),
+    home_spread_odds: price("home_spread_odds", "spread_line"), away_spread_odds: price("away_spread_odds", "spread_line"),
+    over_odds: price("over_odds", "total_line"), under_odds: price("under_odds", "total_line"),
+  };
+}
+
+// Every candidate bet for a game, in tie-break order (spread, total, moneyline; home/over first)
+function candidates(g, L) {
+  const cal = DATA.calibration[g.season];
+  const m = state.mode === "cal" ? cal.slope * g.margin : g.margin;
+  const sdM = state.mode === "cal" ? cal.sd_margin_cal : cal.sd_margin_raw;
+  const out = [];
+  const add = (market, side, label, p, odds, grade) => {
+    if (!validOdds(odds)) return;
+    out.push({ market, side, label, p, odds, ev: p * (decimal(odds) - 1) - (1 - p), grade });
+  };
+  if (has(L.spread_line)) {
+    const pHome = phi((m - L.spread_line) / sdM);
+    add("spread", "home", `${g.home_team} ${fmtLine(-L.spread_line)}`, pHome, L.home_spread_odds, r => Math.sign(r.result - L.spread_line));
+    add("spread", "away", `${g.away_team} ${fmtLine(L.spread_line)}`, 1 - pHome, L.away_spread_odds, r => Math.sign(L.spread_line - r.result));
+  }
+  if (has(L.total_line) && has(g.total_pred)) {
+    const pOver = phi((g.total_pred - L.total_line) / cal.sd_total);
+    add("total", "over", `Over ${fmtNum(L.total_line)}`, pOver, L.over_odds, r => Math.sign(r.total - L.total_line));
+    add("total", "under", `Under ${fmtNum(L.total_line)}`, 1 - pOver, L.under_odds, r => Math.sign(L.total_line - r.total));
+  }
+  const pWin = phi(m / sdM);
+  add("moneyline", "home", `${g.home_team} ML`, pWin, L.home_moneyline, r => Math.sign(r.result));
+  add("moneyline", "away", `${g.away_team} ML`, 1 - pWin, L.away_moneyline, r => Math.sign(-r.result));
+  return out;
+}
+
+// The deterministic choice: best EV among enabled markets, bet only if it clears the threshold
+function decide(g, useEdits) {
+  const options = candidates(g, linesFor(g, useEdits)).filter(c => state.markets.has(c.market));
+  if (!options.length) return { bet: null, best: null };
+  let best = options[0];
+  for (const c of options) if (c.ev > best.ev + 1e-12) best = c;
+  return { bet: best.ev * 100 >= state.minEv ? best : null, best };
+}
+
+function grade(g, bet) {
+  if (!bet || !has(g.result)) return null;
+  const s = bet.grade(g);
+  const units = s > 0 ? decimal(bet.odds) - 1 : s < 0 ? -1 : 0;
+  return { outcome: s > 0 ? "win" : s < 0 ? "loss" : "push", units };
+}
+
+// ---------- formatting ----------
+const MINUS = "−";
+const fmtNum = x => String(x).replace("-", MINUS);
+const fmtLine = x => x === 0 ? "PK" : (x > 0 ? "+" : MINUS) + Math.abs(x);
+const fmtOdds = o => (o > 0 ? "+" : MINUS) + Math.abs(Math.round(o));
+const fmtPct = (x, d = 1) => (x * 100).toFixed(d) + "%";
+const fmtSigned = (x, d = 2) => (x > 0 ? "+" : x < 0 ? MINUS : "") + Math.abs(x).toFixed(d);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const ICON = {
+  win: '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 6.2l2.3 2.3 4.7-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  loss: '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 3l6 6M9 3l-6 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+  push: '<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 6h6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+};
+const badge = gr => gr ? `<span class="badge ${gr.outcome}">${ICON[gr.outcome]}${gr.outcome[0].toUpperCase() + gr.outcome.slice(1)} <span class="num">${fmtSigned(gr.units)}u</span></span>` : "";
+
+// ---------- weeks ----------
+const weekKey = g => `${g.season}-${String(g.week).padStart(2, "0")}`;
+const weeks = [...new Set(DATA.games.map(weekKey))].sort();
+function defaultWeek() {
+  const open = weeks.filter(k => DATA.games.some(g => weekKey(g) === k && !has(g.result)));
+  return open[0] || weeks[weeks.length - 1];
+}
+if (!weeks.includes(state.week)) state.week = defaultWeek();
+
+// ---------- render: week ----------
+function renderWeek() {
+  const games = DATA.games.filter(g => weekKey(g) === state.week);
+  const [season, week] = state.week.split("-").map(Number);
+  document.getElementById("week-title").textContent = `${season} week ${week} picks`;
+  const graded = games.filter(g => has(g.result)).length;
+  const backtested = games.some(g => g.source === "backtest");
+  document.getElementById("week-note").textContent =
+    `${games.length} games · ${graded ? `${graded} final` : "none played yet"} · ${backtested ? "walk-forward backtest" : "forecast"}`;
+
+  const banner = document.getElementById("banner");
+  const pt = DATA.plays_through;
+  if (season > pt.season) {
+    banner.hidden = false;
+    banner.innerHTML = `<strong>Stale ratings.</strong> Play-by-play data ends at ${pt.season} week ${pt.week}, so these ${season} picks use last season's team form and know nothing about ${season} games played so far. Export ${season} plays into <code>GAMES/</code>, then re-run <code>predict</code> and <code>build</code> before trusting them.`;
+  } else banner.hidden = true;
+
+  const rows = [], chips = [];
+  for (const g of games) {
+    const { bet, best } = decide(g, true);
+    const L = linesFor(g, true);
+    const e = state.edits[g.game_id] || {};
+    const input = (k, v, step) => `<input class="line-in num${k in e && e[k] !== g[k] ? " edited" : ""}" type="number" step="${step}" data-game="${esc(g.game_id)}" data-key="${k}" value="${has(v) ? v : ""}" placeholder="—" aria-label="${k.replace(/_/g, " ")} for ${esc(g.away_team)} at ${esc(g.home_team)}">`;
+    const gr = grade(g, bet);
+    const date = g.gameday ? new Date(g.gameday + "T12:00:00").toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) : "";
+    const finalScore = has(g.home_score) && has(g.away_score) ? ` · final ${g.away_score}–${g.home_score}` : "";
+    const homePts = (g.total_pred + g.margin) / 2, awayPts = (g.total_pred - g.margin) / 2;
+    let pickCell, pCell = "", evCell = "";
+    if (bet) {
+      pickCell = `<span class="pick">${esc(bet.label)}</span> <span class="sub num">${fmtOdds(bet.odds)}</span>`;
+      pCell = fmtPct(bet.p); evCell = fmtSigned(bet.ev * 100, 1) + "%";
+      chips.push(`<span class="chip">${esc(bet.label)} <span class="num">${fmtOdds(bet.odds)} · EV ${fmtSigned(bet.ev * 100, 1)}%</span></span>`);
+    } else if (best) {
+      pickCell = `<span class="pass">Pass</span><span class="sub">best: ${esc(best.label)} ${fmtSigned(best.ev * 100, 1)}%</span>`;
+    } else {
+      pickCell = `<span class="pass">Needs lines</span>`;
+    }
+    rows.push(`<tr>
+      <td><span class="matchup">${esc(g.away_team)} @ ${esc(g.home_team)}</span><span class="sub">${esc(date)}${g.location === "Neutral" ? " · neutral" : ""}${esc(finalScore)}</span></td>
+      <td class="r num">${esc(g.home_team)} ${homePts.toFixed(1)}–${awayPts.toFixed(1)}<span class="sub">margin ${fmtSigned(g.margin, 1)}, total ${g.total_pred.toFixed(1)}</span></td>
+      <td class="r">${input("spread_line", has(L.spread_line) ? -L.spread_line : null, 0.5)}</td>
+      <td class="r">${input("total_line", L.total_line, 0.5)}</td>
+      <td class="r">${input("home_moneyline", L.home_moneyline, 5)}</td>
+      <td class="r">${input("away_moneyline", L.away_moneyline, 5)}</td>
+      <td>${pickCell}</td>
+      <td class="r num">${pCell}</td>
+      <td class="r num">${evCell}</td>
+      <td>${badge(gr)}</td>
+    </tr>`);
+  }
+  document.getElementById("games").innerHTML = rows.join("");
+  document.getElementById("slate").innerHTML = chips.length ? chips.join("") :
+    `<span class="empty">No game clears the ${state.minEv}% edge with these markets. Passing on the whole week is a valid outcome.</span>`;
+}
+
+// ---------- render: record ----------
+function summarize(bets) {
+  const w = bets.filter(b => b.gr.outcome === "win").length;
+  const l = bets.filter(b => b.gr.outcome === "loss").length;
+  const p = bets.length - w - l;
+  const units = bets.reduce((s, b) => s + b.gr.units, 0);
+  return { n: bets.length, w, l, p, units, hit: w + l ? w / (w + l) : NaN, roi: bets.length ? units / bets.length : NaN };
+}
+
+function renderRecord() {
+  const bets = [];
+  let running = 0, eligible = 0;
+  for (const g of DATA.games) {
+    if (!has(g.result)) continue;
+    eligible++;
+    const { bet } = decide(g, false);   // record uses the original closing lines, never edits
+    const gr = grade(g, bet);
+    if (!gr) continue;
+    running += gr.units;
+    bets.push({ g, bet, gr, running });
+  }
+  const all = summarize(bets);
+  const tile = (label, value, note) => `<div class="tile"><div class="label">${label}</div><div class="value num">${value}</div>${note ? `<div class="note">${note}</div>` : ""}</div>`;
+  document.getElementById("tiles").innerHTML = [
+    tile("Bets", all.n, `of ${eligible} graded games`),
+    tile("Record", `${all.w}–${all.l}${all.p ? "–" + all.p : ""}`, "W–L–P"),
+    tile("Hit rate", all.n ? fmtPct(all.hit) : "—", "52.4% breaks even at −110"),
+    tile("Units", all.n ? fmtSigned(all.units, 1) : "—", "1u flat stakes"),
+    tile("ROI", all.n ? fmtSigned(all.roi * 100, 1) + "%" : "—", "units ÷ bets"),
+  ].join("");
+
+  let verdict;
+  if (!all.n) verdict = "This rule places no bets on the graded games. Lower the minimum edge or enable more markets.";
+  else if (all.n < 100) verdict = `Only ${all.n} bets, which is too few to tell skill from luck. ±1 standard error on hit rate is about ±${(50 / Math.sqrt(all.n)).toFixed(0)} points.`;
+  else {
+    const se = Math.sqrt(0.25 / (all.w + all.l));
+    const z = (all.hit - 0.5238) / se;
+    verdict = z > 2 ? `Hit rate is ${z.toFixed(1)} standard errors above break-even. That's encouraging, but these thresholds were tuned on the same games.`
+      : z > 0 ? `Above break-even, but only by ${z.toFixed(1)} standard errors, which is within the range luck produces over ${all.n} bets.`
+      : `Below break-even by ${(-z).toFixed(1)} standard errors. Over these games the rule has not beaten the closing line after the vig.`;
+  }
+  document.getElementById("verdict").textContent = verdict;
+
+  const slices = [["All", bets]];
+  for (const s of [...new Set(bets.map(b => b.g.season))]) slices.push([`${s} season`, bets.filter(b => b.g.season === s)]);
+  for (const m of MARKETS) if (state.markets.has(m)) slices.push([MARKET_LABEL[m], bets.filter(b => b.bet.market === m)]);
+  document.getElementById("breakdown").innerHTML = slices.map(([name, list]) => {
+    const s = summarize(list);
+    return `<tr><td>${name}</td><td class="r num">${s.n}</td><td class="r num">${s.w}–${s.l}–${s.p}</td><td class="r num">${s.n ? fmtPct(s.hit) : "—"}</td><td class="r num">${s.n ? fmtSigned(s.units, 1) : "—"}</td><td class="r num">${s.n ? fmtSigned(s.roi * 100, 1) + "%" : "—"}</td></tr>`;
+  }).join("");
+
+  document.getElementById("ledger").innerHTML = bets.map(b => `<tr>
+    <td>${b.g.season} wk ${b.g.week} · ${esc(b.g.away_team)} @ ${esc(b.g.home_team)}</td><td>${esc(b.bet.label)}</td>
+    <td class="r num">${fmtOdds(b.bet.odds)}</td><td class="r num">${fmtPct(b.bet.p)}</td><td class="r num">${fmtSigned(b.bet.ev * 100, 1)}%</td>
+    <td>${badge(b.gr)}</td><td class="r num">${fmtSigned(b.gr.units)}</td><td class="r num">${fmtSigned(b.running, 1)}</td></tr>`).join("");
+
+  renderChart(bets);
+}
+
+// ---------- chart ----------
+const SVGNS = "http://www.w3.org/2000/svg";
+function el(name, attrs, parent) {
+  const node = document.createElementNS(SVGNS, name);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+  if (parent) parent.appendChild(node);
+  return node;
+}
+function niceTicks(lo, hi, count = 5) {
+  const span = hi - lo || 1;
+  const step0 = span / count, mag = 10 ** Math.floor(Math.log10(step0));
+  const step = [1, 2, 2.5, 5, 10].map(f => f * mag).find(s => span / s <= count) || 10 * mag;
+  const ticks = [];
+  for (let v = Math.ceil(lo / step) * step; v <= hi + 1e-9; v += step) ticks.push(+v.toFixed(6));
+  return ticks;
+}
+function renderChart(bets) {
+  const svg = document.getElementById("chart"), wrap = document.getElementById("chart-wrap"), tip = document.getElementById("tooltip");
+  svg.innerHTML = "";
+  const W = wrap.clientWidth || 600, H = 260, pad = { l: 40, r: 52, t: 16, b: 24 };
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  if (!bets.length) {
+    el("text", { x: W / 2, y: H / 2, "text-anchor": "middle", fill: "var(--text-muted)", "font-size": 13 }, svg).textContent = "No bets under this rule";
+    return;
+  }
+  const ys = [0, ...bets.map(b => b.running)];
+  const ticks = niceTicks(Math.min(...ys), Math.max(...ys));
+  const lo = Math.min(ticks[0], ...ys), hi = Math.max(ticks[ticks.length - 1], ...ys);
+  const x = i => pad.l + (i / bets.length) * (W - pad.l - pad.r);
+  const y = v => pad.t + (hi - v) / (hi - lo || 1) * (H - pad.t - pad.b);
+  const axis = el("g", { class: "axis" }, svg);
+  for (const t of ticks) {
+    el("line", { x1: pad.l, x2: W - pad.r, y1: y(t), y2: y(t), stroke: t === 0 ? "var(--text-muted)" : "var(--grid)", "stroke-width": 1, "stroke-dasharray": t === 0 ? "3 3" : "" }, axis);
+    el("text", { x: pad.l - 6, y: y(t) + 4, "text-anchor": "end" }, axis).textContent = t === 0 ? "0" : fmtSigned(t, 0);
+  }
+  // season boundaries
+  let prev = null;
+  bets.forEach((b, i) => {
+    if (b.g.season !== prev) {
+      if (prev !== null) el("line", { x1: x(i), x2: x(i), y1: pad.t, y2: H - pad.b, stroke: "var(--grid)", "stroke-width": 1 }, axis);
+      el("text", { x: x(i) + 4, y: H - 6 }, axis).textContent = b.g.season;
+      prev = b.g.season;
+    }
+  });
+  const d = "M" + [[x(0), y(0)], ...bets.map((b, i) => [x(i + 1), y(b.running)])].map(p => p.map(n => n.toFixed(1)).join(",")).join("L");
+  el("path", { d, fill: "none", stroke: "var(--series-1)", "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }, svg);
+  const last = bets[bets.length - 1];
+  el("text", { x: x(bets.length) + 6, y: y(last.running) + 4, "text-anchor": "start", fill: "var(--text-primary)", "font-size": 12, "font-weight": 600 }, svg).textContent = fmtSigned(last.running, 1) + "u";
+
+  const cross = el("line", { y1: pad.t, y2: H - pad.b, stroke: "var(--text-muted)", "stroke-width": 1, opacity: 0 }, svg);
+  const dot = el("circle", { r: 4.5, fill: "var(--series-1)", stroke: "var(--surface-1)", "stroke-width": 2, opacity: 0 }, svg);
+  const hit = el("rect", { x: pad.l, y: 0, width: W - pad.l - pad.r, height: H, fill: "transparent" }, svg);
+  const show = (clientX) => {
+    const r = svg.getBoundingClientRect();
+    const px = (clientX - r.left) * (W / r.width);
+    const i = Math.max(1, Math.min(bets.length, Math.round((px - pad.l) / (W - pad.l - pad.r) * bets.length)));
+    const b = bets[i - 1];
+    cross.setAttribute("x1", x(i)); cross.setAttribute("x2", x(i)); cross.setAttribute("opacity", 0.6);
+    dot.setAttribute("cx", x(i)); dot.setAttribute("cy", y(b.running)); dot.setAttribute("opacity", 1);
+    tip.innerHTML = `<div class="t-title">${b.g.season} wk ${b.g.week} · ${esc(b.g.away_team)} @ ${esc(b.g.home_team)}</div>
+      <div class="t-row"><span>Pick</span><b>${esc(b.bet.label)} ${fmtOdds(b.bet.odds)}</b></div>
+      <div class="t-row"><span>Result</span><b>${b.gr.outcome} ${fmtSigned(b.gr.units)}u</b></div>
+      <div class="t-row"><span>Running</span><b>${fmtSigned(b.running, 1)}u after ${i} bets</b></div>`;
+    const left = x(i) / W * r.width;
+    tip.style.left = Math.min(Math.max(0, left + 12), r.width - tip.offsetWidth) + "px";
+    tip.style.top = "0px";
+    tip.style.opacity = 1;
+  };
+  hit.addEventListener("pointermove", e => show(e.clientX));
+  hit.addEventListener("pointerleave", () => { tip.style.opacity = 0; cross.setAttribute("opacity", 0); dot.setAttribute("opacity", 0); });
+}
+
+// ---------- controls ----------
+function renderAll() { renderWeek(); renderRecord(); }
+
+const weekSel = document.getElementById("week");
+weekSel.innerHTML = weeks.map(k => {
+  const [s, w] = k.split("-").map(Number);
+  const gs = DATA.games.filter(g => weekKey(g) === k);
+  const tag = gs.some(g => !has(g.result)) ? " · upcoming" : "";
+  return `<option value="${k}">${s} week ${w}${tag}</option>`;
+}).join("");
+weekSel.value = state.week;
+weekSel.addEventListener("change", () => { state.week = weekSel.value; store.set("week", state.week); renderWeek(); });
+
+document.querySelectorAll("[data-market]").forEach(box => {
+  box.checked = state.markets.has(box.dataset.market);
+  box.addEventListener("change", () => {
+    box.checked ? state.markets.add(box.dataset.market) : state.markets.delete(box.dataset.market);
+    store.set("markets", [...state.markets]); renderAll();
+  });
+});
+const minEv = document.getElementById("minEv");
+minEv.value = state.minEv;
+minEv.addEventListener("input", () => { const v = parseFloat(minEv.value); if (isFinite(v)) { state.minEv = v; store.set("minEv", v); renderAll(); } });
+const juice = document.getElementById("juice");
+juice.value = state.juice;
+juice.addEventListener("input", () => { const v = parseFloat(juice.value); if (validOdds(v)) { state.juice = v; store.set("juice", v); renderAll(); } });
+document.querySelectorAll("#mode button").forEach(btn => {
+  btn.setAttribute("aria-pressed", btn.dataset.mode === state.mode);
+  btn.addEventListener("click", () => {
+    state.mode = btn.dataset.mode; store.set("mode", state.mode);
+    document.querySelectorAll("#mode button").forEach(b => b.setAttribute("aria-pressed", b === btn));
+    renderAll();
+  });
+});
+
+// Line edits: stored per game; the spread box shows the home team's sportsbook spread (negated spread_line)
+document.getElementById("games").addEventListener("change", e => {
+  const t = e.target;
+  if (!t.matches(".line-in")) return;
+  const g = DATA.games.find(x => x.game_id === t.dataset.game);
+  const key = t.dataset.key;
+  let v = t.value === "" ? null : parseFloat(t.value);
+  if (key === "spread_line" && v !== null) v = -v;
+  const edits = state.edits[g.game_id] || (state.edits[g.game_id] = {});
+  if (v === g[key] || (v === null && !has(g[key]))) delete edits[key]; else edits[key] = v;
+  if (!Object.keys(edits).length) delete state.edits[g.game_id];
+  store.set("edits", state.edits);
+  renderWeek();
+});
+document.getElementById("reset").addEventListener("click", () => {
+  for (const g of DATA.games) if (weekKey(g) === state.week) delete state.edits[g.game_id];
+  store.set("edits", state.edits); renderWeek();
+});
+
+const pt = DATA.plays_through;
+document.getElementById("meta").textContent =
+  `Plays through ${pt.season} wk ${pt.week} · built ${DATA.built} · calibrated slope ${Object.values(DATA.calibration).at(-1).slope.toFixed(2)}`;
+
+let resizeTimer;
+window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(renderRecord, 120); });
+renderAll();
+</script>
+</body>
+</html>

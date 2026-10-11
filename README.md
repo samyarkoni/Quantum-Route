@@ -19,6 +19,7 @@ quantum-route/
 │   ├── Drive_Model/           Play loading, drive building, drive simulator
 │   ├── Scoring_Model/         Expected points (EP) and EPA per play
 │   ├── Team_Model/            MCMC team strength, play-calling tendencies, game sim, backtest
+│   ├── Betting/               Betting board: one deterministic pick (or pass) per game
 │   └── Main.py                Scratch entry point (loads the schedule)
 ├── GAMES/<season>/<week>/     One CSV per game, every play (2018–2025)
 ├── Data/                      Generated outputs and caches (git-ignored)
@@ -51,6 +52,19 @@ quantum-route/
 - **`game_sim.py`**: `GamePredictor` fits everything on games played before a given week, weighting recent games more heavily. It then simulates full games as alternating drives, including kickoffs, the clock and overtime. Each batch of simulations uses a fresh posterior draw, so uncertainty about the parameters shows up in the predicted margin.
 - **`run_backtest.py`**: a walk-forward backtest. Each week is predicted using only the games before it, and the predictions are scored against the closing spread, total and moneyline. The scores include mean absolute error (MAE), Brier score, and against-the-spread (ATS) record by edge size.
 - **`coach_vs_player.py`**: a crossed random-effects model that splits offensive performance among the head coach, the starting QB and the rest of the roster.
+
+### 5. Betting board: `Code/Betting/`
+`betting_board.py` turns the team model's simulations into a single HTML page, `Data/Betting/betting_board.html`. The page makes one deterministic choice per game:
+- It converts the model's margin and total into a cover, over or win probability, using a normal distribution with the real miss spread from the other backtested seasons.
+- It prices every side of each enabled market at the listed odds.
+- It bets the highest-EV side if that clears the minimum edge, and passes otherwise.
+
+On the page you can:
+- type in your sportsbook's lines, and the pick updates immediately;
+- switch between the raw model margin and the calibrated one (calibrated multiplies the margin by the out-of-sample slope);
+- see how the current rule would have done on every graded game, with record, units, ROI and a cumulative chart.
+
+The track record is the honest test. Over the 2024–2025 backtests, no setting clearly beats the vig.
 
 ## Research notes
 
@@ -104,6 +118,10 @@ cd Code/Team_Model && python run_backtest.py report
 
 # Coach vs. QB vs. roster decomposition
 cd Code/Team_Model && python coach_vs_player.py
+
+# Betting board: simulate a week (or a whole season), then build the page
+cd Code/Betting && python betting_board.py predict 2026 6
+cd Code/Betting && python betting_board.py build --refresh   # --refresh pulls new lines and results
 ```
 
 The first run of the team model builds `Data/Team_Model/plays_epa_full.parquet`, and later runs reuse it. Delete that file to rebuild it after changing the EP model.
