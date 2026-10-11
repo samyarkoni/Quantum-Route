@@ -63,7 +63,7 @@ def predict(season, weeks=None):
         rows = []
         for g in season_games[season_games["week"] == week].itertuples():
             pred = predictor.predict(g.home_team, g.away_team, neutral=g.location == "Neutral",
-                                     seed=zlib.crc32(g.game_id.encode()))
+                                     seed=zlib.crc32(g.game_id.encode()), home_qb=g.home_qb_id, away_qb=g.away_qb_id)
             pred["total_pred"] = pred.pop("total")
             rows.append({"game_id": g.game_id, "season": season, "week": week, "home_team": g.home_team,
                          "away_team": g.away_team, **pred})

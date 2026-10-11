@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-from data import before, recency_weights
+from data import before, recency_weights, starting_qbs
 from mcmc import run_chains
 from models import EmpiricalYardsModel, FieldGoalModel, PlayCallModel
 from play_calling import ExpectedCallModel, TeamPlayCallModel, TeamTendencyModel
@@ -12,7 +12,8 @@ from team_strength import TeamStrengthModel
 KICK_ENDINGS = ["punt", "field_goal", "missed_fg"]  # the kick is a snap that ends the drive
 RELATIVE_ENDINGS = ["punt", "turnover", "downs", "missed_fg"]
 PHYSICS_SEASONS = 3  # league-wide play outcomes come from the most recent seasons of history
-RENAMED_TEAMS = {"OAK": "LV"}  # relocations since 2018, so carried-over form follows the franchise
+RENAMED_TEAMS = {"OAK": "LV"}
+QB_HISTORY_WEIGHT = 0.15  # play weight for older seasons that inform only QB effects (about last season's earliest)  # relocations since 2018, so carried-over form follows the franchise
 
 
 class EpaYardsModel(EmpiricalYardsModel):
@@ -181,11 +182,23 @@ class GameSimulator:
 class GamePredictor:
     """Everything fit on games before (season, week): league play physics, team strength and
     team tendencies (MCMC, recency weighted), then games simulated with a fresh posterior draw per
-    batch of simulations so parameter uncertainty reaches the predicted margin."""
+    batch of simulations so parameter uncertainty reaches the predicted margin.
 
-    def __init__(self, plays, season, week, n_chains=2, n_burn=500, n_draws=1000, seed=0, verbose=False):
+    With qb=True (the default) each offense's strength is split into its starting QB and the rest,
+    so predictions use the QB who actually starts (see TeamStrengthModel). qb_history adds that many
+    older seasons (before last season) at QB_HISTORY_WEIGHT; in those seasons every team-season is
+    its own team, so the old plays inform the QBs and nothing about current rosters."""
+
+    def __init__(self, plays, season, week, n_chains=2, n_burn=500, n_draws=1000, seed=0, verbose=False, qb=True,
+                 qb_history=0):
         history = before(plays, season, week).reset_index(drop=True)
+        starters = starting_qbs().set_index(["game_id", "team"])["qb"]
+        history["qb"] = starters.reindex(pd.MultiIndex.from_arrays([history["game_id"], history["posteam"]])).to_numpy()
+        history["qb"] = history["qb"].fillna("none:" + history["posteam"].astype(str))
         history[["posteam", "defteam"]] = history[["posteam", "defteam"]].replace(RENAMED_TEAMS)
+        # Plays are in game order, so each team's last listed starter is its current one
+        self.last_starter = history.dropna(subset=["posteam"]).groupby("posteam")["qb"].last().to_dict()
+        self.use_qb = qb
         physics = history[history["season"] >= history["season"].max() - PHYSICS_SEASONS + 1]
 
         self.base_calls = PlayCallModel(physics)
@@ -202,12 +215,24 @@ class GamePredictor:
         weights = recency_weights(history, season, week)
         recent = history[weights > 0].reset_index(drop=True)
         w = weights[weights > 0]
-        self.strength = TeamStrengthModel(recent, w)
+        if qb and qb_history:
+            older = history["season"].between(season - 1 - qb_history, season - 2).to_numpy()
+            history = history.copy()
+            for col in ("posteam", "defteam"):
+                relabel = older & history[col].notna().to_numpy()
+                history.loc[relabel, col] = history.loc[relabel, col] + "@" + history.loc[relabel, "season"].astype(str)
+            strength_w = np.where(older, QB_HISTORY_WEIGHT, weights)
+            strength_plays = history[strength_w > 0].reset_index(drop=True)
+            strength_w = strength_w[strength_w > 0]
+        else:
+            strength_plays, strength_w = recent, w
+        self.strength = TeamStrengthModel(strength_plays, strength_w, qb=qb)
         self.strength_draws, _ = run_chains(self.strength, n_chains, n_burn, n_draws, seed=seed)
         self.tendency = TeamTendencyModel(recent, ExpectedCallModel().fit(physics), w)
         self.tendency_draws, _ = run_chains(self.tendency, n_chains, n_burn, n_draws, seed=seed + 1)
 
         self.strength_index = {t: i for i, t in enumerate(self.strength.teams)}
+        self.qb_index = {q: i for i, q in enumerate(self.strength.qbs)}
         self.tendency_index = {t: i for i, t in enumerate(self.tendency.teams)}
         flat = lambda d: {k: v.reshape(-1, *v.shape[2:]) for k, v in d.items()}  # noqa: E731
         self.s_flat, self.t_flat = flat(self.strength_draws), flat(self.tendency_draws)
@@ -249,26 +274,39 @@ class GamePredictor:
         _, units = simulate(environment)
         return environment, 3600 / (drives_per_game * units)
 
-    def _drive_sim(self, offense, defense, home_sign, draw):
+    def _qb_effect(self, team, qb, draw, rng):
+        """(run, pass) EPA/play of this offense's starter in this posterior draw. An unlisted
+        starter means the team's most recent one; a QB with no snaps in the window is a fresh draw
+        from the QB population."""
+        if not self.use_qb:
+            return np.zeros(2)
+        if not isinstance(qb, str):
+            qb = self.last_starter.get(team)
+        if qb in self.qb_index:
+            return self.s_flat["qb"][draw, self.qb_index[qb]]
+        return rng.normal(0, self.s_flat["tau_qb"][draw])
+
+    def _drive_sim(self, offense, defense, home_sign, draw, qb_effect):
         s, t = self.s_flat, self.t_flat
         o, d = self.strength_index[offense], self.strength_index[defense]
         shift = {call: self.environment + s["off"][draw, o, j] + s["def"][draw, d, j] + s["eta"][draw, 0] * home_sign
-                 for j, call in enumerate(["run", "pass"])}
+                 + qb_effect[j] for j, call in enumerate(["run", "pass"])}
         k = self.tendency_index[offense]
         calls = TeamPlayCallModel(self.base_calls, t["pass_offset"][draw, k], t["go_offset"][draw, k])
         return DriveSimulator(calls, TiltedYardsModel(self.yards, shift), self.field_goals,
                               td_points=6, defensive_td_rate=self.defensive_td_rate)
 
-    def simulate(self, home, away, neutral=False, n_draws=50, sims_per_draw=8, seed=0):
-        """Array of (home_points, away_points), one row per simulated game."""
+    def simulate(self, home, away, neutral=False, n_draws=50, sims_per_draw=8, seed=0, home_qb=None, away_qb=None):
+        """Array of (home_points, away_points), one row per simulated game. home_qb / away_qb are
+        nflverse player ids of the starters (None: each team's most recent starter)."""
         rng = np.random.default_rng(seed)
         home, away = RENAMED_TEAMS.get(home, home), RENAMED_TEAMS.get(away, away)
         sign = 0 if neutral else 1
         draws = rng.integers(len(self.s_flat["mu"]), size=n_draws)
         results = []
         for draw in draws:
-            home_sim = self._drive_sim(home, away, sign, draw)
-            away_sim = self._drive_sim(away, home, -sign, draw)
+            home_sim = self._drive_sim(home, away, sign, draw, self._qb_effect(home, home_qb, draw, rng))
+            away_sim = self._drive_sim(away, home, -sign, draw, self._qb_effect(away, away_qb, draw, rng))
             results += [self.game.simulate(home_sim, away_sim, rng) for _ in range(sims_per_draw)]
         return np.array(results)
 

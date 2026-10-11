@@ -2,15 +2,16 @@ import numpy as np
 import pandas as pd
 
 from data import neutral_filter
-from mcmc import StepTuner, log_half_normal, metropolis_update
+from mcmc import StepTuner, log_half_normal, metropolis_update, scale_update
 
 CALLS = ["run", "pass"]
 TAU_SCALE = 0.1   # half-normal prior scale on the spread of team effects (EPA/play)
 ETA_SCALE = 0.05  # normal prior sd on home field (EPA/play for the home offense)
 
 
-# Directions that leave every cell mean unchanged, as coefficients on (mu, off, def)
-RIDGES = [(1, -1, 0), (1, 0, -1), (0, 1, -1)]
+# Directions that leave every cell mean unchanged, as coefficients on (mu, off, def, qb)
+RIDGES = [(1, -1, 0, 0), (1, 0, -1, 0), (0, 1, -1, 0)]
+QB_RIDGES = [(1, 0, 0, -1), (0, 1, 0, -1)]
 
 
 def strength_mask(plays):
@@ -26,6 +27,11 @@ class TeamStrengthModel:
         off[., call] ~ Normal(0, tau_off[call]),  def[., call] ~ Normal(0, tau_def[call])
         tau ~ HalfNormal(TAU_SCALE),  eta ~ Normal(0, ETA_SCALE),  mu, log sigma flat
 
+    With qb=True the offense also gets its starting quarterback's effect, + qb[starter, call] with
+    qb[., call] ~ Normal(0, tau_qb[call]), so off becomes the rest of the offense. The QB effect
+    follows the player across teams, and a backup's start changes the prediction (plays needs a
+    "qb" column: the offense's starter in that game).
+
     home is +1 for the home offense, -1 for the away offense, 0 at neutral sites, so the home
     team's per-play edge is 2 * eta. Plays are collapsed to sufficient statistics per
     (offense, defense, call, home) cell, so a sweep costs O(cells), not O(plays). Optional play
@@ -35,7 +41,7 @@ class TeamStrengthModel:
     well), so each sweep also proposes such shifts directly; they leave the likelihood unchanged
     and only the prior decides, which keeps the chain from crawling along that ridge."""
 
-    def __init__(self, plays, weights=None):
+    def __init__(self, plays, weights=None, qb=False):
         w = np.ones(len(plays)) if weights is None else np.asarray(weights, dtype=float)
         keep = strength_mask(plays) & (w > 0)
         plays, w = plays[keep], w[keep]
@@ -43,25 +49,31 @@ class TeamStrengthModel:
         self.teams = np.array(sorted(set(plays["posteam"]) | set(plays["defteam"])))
         team_index = {t: i for i, t in enumerate(self.teams)}
         home = np.where(plays["neutral"], 0, np.where(plays["posteam_is_home"] == 1, 1, -1))
+        self.use_qb = qb
+        self.qbs = np.array(sorted(plays["qb"].unique())) if qb else np.array([])
         cells = pd.DataFrame({
             "off": plays["posteam"].map(team_index).to_numpy(),
             "def": plays["defteam"].map(team_index).to_numpy(),
             "call": plays["call"].map({c: i for i, c in enumerate(CALLS)}).to_numpy(),
             "home": home,
+            "qb": plays["qb"].map({q: i for i, q in enumerate(self.qbs)}).to_numpy() if qb else 0,
             "s0": w, "s1": w * plays["epa"].to_numpy(), "s2": w * plays["epa"].to_numpy() ** 2,
-        }).groupby(["off", "def", "call", "home"], as_index=False).sum()
+        }).groupby(["off", "def", "call", "home", "qb"], as_index=False).sum()
         self.off_idx, self.def_idx = cells["off"].to_numpy(), cells["def"].to_numpy()
         self.call_idx, self.home = cells["call"].to_numpy(), cells["home"].to_numpy()
         self.s0, self.s1, self.s2 = cells["s0"].to_numpy(), cells["s1"].to_numpy(), cells["s2"].to_numpy()
         self.n_teams = len(self.teams)
+        self.qb_idx, self.n_qbs = cells["qb"].to_numpy(), len(self.qbs)
+        self.qb_call = self.qb_idx * 2 + self.call_idx
         self.team_call_off = self.off_idx * 2 + self.call_idx
         self.team_call_def = self.def_idx * 2 + self.call_idx
         self.plays_per_team_call = np.bincount(self.team_call_off, self.s0, minlength=2 * self.n_teams)
 
     # --- likelihood pieces -------------------------------------------------------------------
     def _means(self, s):
-        return (s["mu"][self.call_idx] + s["eta"][0] * self.home
-                + s["off"][self.off_idx, self.call_idx] + s["def"][self.def_idx, self.call_idx])
+        means = (s["mu"][self.call_idx] + s["eta"][0] * self.home
+                 + s["off"][self.off_idx, self.call_idx] + s["def"][self.def_idx, self.call_idx])
+        return means + s["qb"][self.qb_idx, self.call_idx] if self.use_qb else means
 
     def _cell_loglik(self, means, sigma):
         """Log likelihood of each cell given its mean (dropping terms constant in the mean)."""
@@ -79,11 +91,14 @@ class TeamStrengthModel:
         tuners = {name: StepTuner(size, initial) for name, size, initial in [
             ("mu", 2, 0.01), ("eta", 1, 0.01), ("off", shape, 0.03), ("def", shape, 0.03),
             ("ridge0", 2, 0.02), ("ridge1", 2, 0.02), ("ridge2", 2, 0.02),
-            ("tau", (2, 2), 0.2), ("log_sigma", 2, 0.005)]}
+            ("tau", (2, 2), 0.2), ("log_sigma", 2, 0.005),
+            ("qb", (max(self.n_qbs, 1), 2), 0.03), ("tau_qb", 2, 0.2), ("qb_scale0", 1, 0.1), ("qb_scale1", 1, 0.1),
+            ("ridge3", 2, 0.02), ("ridge4", 2, 0.02)]}
         return {
             "mu": mean + rng.normal(0, 0.02, 2), "eta": rng.normal(0, 0.01, 1),
             "off": rng.normal(0, 0.05, shape), "def": rng.normal(0, 0.05, shape),
             "tau": rng.uniform(0.03, 0.15, (2, 2)), "sigma": sd, "tuners": tuners,
+            "qb": rng.normal(0, 0.05, (max(self.n_qbs, 1), 2)), "tau_qb": rng.uniform(0.03, 0.15, 2),
         }
 
     def sweep(self, s, rng, iteration, adapt):
@@ -102,6 +117,33 @@ class TeamStrengthModel:
             s[side] = metropolis_update(current, log_density, t[side], rng, iteration, adapt)
             means = self._means(s)
 
+        if self.use_qb:
+            current = s["qb"]
+
+            def qb_density(values):
+                shifted = means + (values - current)[self.qb_idx, self.call_idx]
+                loglik = np.bincount(self.qb_call, self._cell_loglik(shifted, s["sigma"]), minlength=2 * self.n_qbs)
+                return loglik.reshape(self.n_qbs, 2) - 0.5 * (values / s["tau_qb"]) ** 2
+
+            s["qb"] = metropolis_update(current, qb_density, t["qb"], rng, iteration, adapt)
+            means = self._means(s)
+
+            # Most QBs in the window are backups with few snaps, so tau_qb and their effects form a
+            # funnel; move each call's scale and effects together as well as one at a time
+            for j in range(2):
+                in_call = self.call_idx == j
+
+                def call_loglik(effects, j=j, in_call=in_call):
+                    shifted = means[in_call] + (effects - s["qb"][:, j])[self.qb_idx[in_call]]
+                    return (self.s1[in_call] * shifted - 0.5 * self.s0[in_call] * shifted ** 2).sum() / s["sigma"][j] ** 2
+
+                tau_j, effects_j = scale_update(s["tau_qb"][j], s["qb"][:, j], call_loglik,
+                                                lambda tau: float(log_half_normal(tau, TAU_SCALE)),
+                                                t[f"qb_scale{j}"], rng, iteration, adapt)
+                s["tau_qb"] = s["tau_qb"].copy(); s["tau_qb"][j] = tau_j
+                s["qb"] = s["qb"].copy(); s["qb"][:, j] = effects_j
+            means = self._means(s)
+
         # League means per call (flat prior) and home field
         def mu_density(values):
             shifted = means + (values - s["mu"])[self.call_idx]
@@ -115,15 +157,20 @@ class TeamStrengthModel:
         s["eta"] = metropolis_update(s["eta"], eta_density, t["eta"], rng, iteration, adapt)
 
         # Likelihood-neutral moves along the identifiability ridges (one per call), decided by the prior
-        for r, (a_mu, a_off, a_def) in enumerate(RIDGES):
-            def ridge_density(c, a_off=a_off, a_def=a_def):
+        for r, (a_mu, a_off, a_def, a_qb) in enumerate(RIDGES + (QB_RIDGES if self.use_qb else [])):
+            def ridge_density(c, a_off=a_off, a_def=a_def, a_qb=a_qb):
                 off, de = s["off"] + a_off * c, s["def"] + a_def * c
-                return -0.5 * ((off / s["tau"][0]) ** 2).sum(axis=0) - 0.5 * ((de / s["tau"][1]) ** 2).sum(axis=0)
+                density = -0.5 * ((off / s["tau"][0]) ** 2).sum(axis=0) - 0.5 * ((de / s["tau"][1]) ** 2).sum(axis=0)
+                if self.use_qb:
+                    density = density - 0.5 * (((s["qb"] + a_qb * c) / s["tau_qb"]) ** 2).sum(axis=0)
+                return density
 
             c = metropolis_update(np.zeros(2), ridge_density, t[f"ridge{r}"], rng, iteration, adapt)
             s["mu"] = s["mu"] + a_mu * c
             s["off"] = s["off"] + a_off * c
             s["def"] = s["def"] + a_def * c
+            if self.use_qb:
+                s["qb"] = s["qb"] + a_qb * c
 
         # Spread of team effects, sampled on the log scale (Jacobian: + log tau)
         effects = np.stack([s["off"], s["def"]])  # (side, team, call)
@@ -135,6 +182,13 @@ class TeamStrengthModel:
                     + log_half_normal(tau, TAU_SCALE) + log_tau)
         s["tau"] = np.exp(metropolis_update(np.log(s["tau"]), tau_density, t["tau"], rng, iteration, adapt))
 
+        if self.use_qb:
+            def tau_qb_density(log_tau):
+                tau = np.exp(log_tau)
+                return (-self.n_qbs * log_tau - 0.5 * (s["qb"] ** 2).sum(axis=0) / tau ** 2
+                        + log_half_normal(tau, TAU_SCALE) + log_tau)
+            s["tau_qb"] = np.exp(metropolis_update(np.log(s["tau_qb"]), tau_qb_density, t["tau_qb"], rng, iteration, adapt))
+
         # Per-play noise per call (flat prior on log sigma)
         means = self._means(s)
         sse = np.bincount(self.call_idx, self.s2 - 2 * means * self.s1 + means ** 2 * self.s0, minlength=2)
@@ -145,7 +199,8 @@ class TeamStrengthModel:
         s["sigma"] = np.exp(metropolis_update(np.log(s["sigma"]), sigma_density, t["log_sigma"], rng, iteration, adapt))
 
     def parameters(self, s):
-        return {k: s[k] for k in ("mu", "eta", "off", "def", "tau", "sigma")}
+        keys = ("mu", "eta", "off", "def", "tau", "sigma") + (("qb", "tau_qb") if self.use_qb else ())
+        return {k: s[k] for k in keys}
 
 
 def summarize(model, draws, pass_rate=0.58):

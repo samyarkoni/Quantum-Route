@@ -2,6 +2,9 @@
 
     python run_backtest.py 2025          # one season -> Data/Team_Model/backtest_2025.csv
     python run_backtest.py report        # score every saved season against the closing lines
+
+    python run_backtest.py 2025 --variant NAME [--no-qb] [--qb-history N]
+    python run_backtest.py report NAME   # a variant's files live in Data/Team_Model/variants/NAME/
 """
 import math
 import sys
@@ -15,7 +18,7 @@ from data import OUTPUT_DIR, load_epa_plays, load_games
 from game_sim import GamePredictor
 
 
-def backtest_season(season, first_week=1):
+def backtest_season(season, first_week=1, out_dir=OUTPUT_DIR, **model_options):
     plays, games = load_epa_plays(), load_games()
     season_games = games[games["season"] == season]
     rows = []
@@ -23,17 +26,17 @@ def backtest_season(season, first_week=1):
         if week < first_week:
             continue
         start = time.time()
-        predictor = GamePredictor(plays, season, week, verbose=True)
+        predictor = GamePredictor(plays, season, week, verbose=True, **model_options)
         for g in season_games[season_games["week"] == week].itertuples():
             pred = predictor.predict(g.home_team, g.away_team, g.spread_line, neutral=g.location == "Neutral",
-                                     seed=zlib.crc32(g.game_id.encode()))
+                                     seed=zlib.crc32(g.game_id.encode()), home_qb=g.home_qb_id, away_qb=g.away_qb_id)
             pred["total_pred"] = pred.pop("total")
             rows.append({"game_id": g.game_id, "season": season, "week": week, "home_team": g.home_team,
                          "away_team": g.away_team, "spread_line": g.spread_line, "total_line": g.total_line,
                          "home_moneyline": g.home_moneyline, "away_moneyline": g.away_moneyline,
                          "result": g.result, "total": g.total, **pred})
         print(f"{season} week {week}: {time.time() - start:.0f}s", flush=True)
-        pd.DataFrame(rows).to_csv(OUTPUT_DIR / f"backtest_{season}.csv", index=False)
+        pd.DataFrame(rows).to_csv(out_dir / f"backtest_{season}.csv", index=False)
 
 
 def implied_probability(moneyline):
@@ -70,8 +73,8 @@ def score(df, slope=1.0):
     return out
 
 
-def report():
-    files = sorted(OUTPUT_DIR.glob("backtest_*.csv"))
+def report(directory=OUTPUT_DIR):
+    files = sorted(directory.glob("backtest_*.csv"))
     frames = {int(f.stem.split("_")[1]): pd.read_csv(f) for f in files}
 
     rows, slopes = {}, {}
@@ -91,7 +94,14 @@ def report():
 
 
 if __name__ == "__main__":
-    if sys.argv[1] == "report":
-        report()
+    args = sys.argv[1:]
+    variant = args[args.index("--variant") + 1] if "--variant" in args else None
+    directory = OUTPUT_DIR / "variants" / variant if variant else OUTPUT_DIR
+    if args[0] == "report":
+        report(OUTPUT_DIR / "variants" / args[1] if len(args) > 1 else OUTPUT_DIR)
     else:
-        backtest_season(int(sys.argv[1]))
+        directory.mkdir(parents=True, exist_ok=True)
+        options = {"qb": "--no-qb" not in args}
+        if "--qb-history" in args:
+            options["qb_history"] = int(args[args.index("--qb-history") + 1])
+        backtest_season(int(args[0]), out_dir=directory, **options)

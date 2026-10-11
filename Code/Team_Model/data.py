@@ -27,6 +27,17 @@ def load_games():
     return games[games["season"].isin(SEASONS)].reset_index(drop=True)
 
 
+def starting_qbs():
+    """Listed starting QB per (game_id, team), every season in the schedule, upcoming games included
+    once nflverse fills them in (blank before that)."""
+    if not GAMES_PATH.exists():
+        load_games()
+    games = pd.read_csv(GAMES_PATH, usecols=["game_id", "home_team", "away_team", "home_qb_id", "away_qb_id"])
+    sides = [games[["game_id", f"{side}_team", f"{side}_qb_id"]].set_axis(["game_id", "team", "qb"], axis=1)
+             for side in ("home", "away")]
+    return pd.concat(sides, ignore_index=True)
+
+
 def load_epa_plays(refresh=False):
     """Every play with possession, game state, ep and epa, plus week and neutral-site flags.
     The EP model is fit on all seasons: it is a league-wide valuation of field position, so the
