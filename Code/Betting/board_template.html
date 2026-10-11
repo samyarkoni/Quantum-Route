@@ -182,6 +182,7 @@ tr.placed td { background: var(--pick-bg); }
 .who { display: inline-flex; align-items: center; gap: 6px; }
 .who img { width: 18px; height: 18px; border-radius: 50%; }
 .differs { font-size: 12px; color: var(--warning-ink); }
+.qb-tag { display: inline-block; margin-top: 3px; padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--warning-bg); color: var(--warning-ink); white-space: nowrap; }
 </style>
 <div class="wrap">
   <header>
@@ -210,6 +211,12 @@ tr.placed td { background: var(--pick-bg); }
       <div class="seg" id="mode">
         <button type="button" data-mode="raw" aria-pressed="false">Raw</button>
         <button type="button" data-mode="cal" aria-pressed="true">Calibrated</button>
+      </div>
+    </div>
+    <div class="control"><span>Games</span>
+      <div class="seg" id="qbOnly">
+        <button type="button" data-qb="all" aria-pressed="true">All</button>
+        <button type="button" data-qb="change" aria-pressed="false" title="Bet only games where a team starts a different QB than in its previous game">QB change only</button>
       </div>
     </div>
     <label class="control"><span>Default juice</span><input id="juice" class="ev-input num" type="number" step="5" value="-110"></label>
@@ -285,6 +292,7 @@ tr.placed td { background: var(--pick-bg); }
       <li><b>Win probability.</b> Each outcome is treated as normal around the model line, with the spread of real misses from the other seasons. Home covers with <code>Φ((m − line)/σ)</code>, the over hits with <code>Φ((t − total)/σ<sub>t</sub>)</code> and home wins outright with <code>Φ(m/σ)</code>. Pushes are ignored.</li>
       <li><b>Expected value.</b> <code>EV = p × (decimal odds − 1) − (1 − p)</code> per unit, using the listed price. Spreads and totals without a listed price, or with a line you have edited, use the default juice.</li>
       <li><b>One choice.</b> Of the six bets on a game (both sides of each enabled market), take the highest EV. If it clears the minimum edge, bet it, otherwise pass. Ties go to spread, then total, then moneyline.</li>
+      <li><b>QB change only</b> (optional). Bet only games where at least one team starts a different QB than in its previous game, per nflverse's listed starters. In 2019–2025 backtests the model went about 56–57% against the spread on these games, a slice chosen after looking at the data. This switch exists to paper-trade it from here on, not because it is proven. Starters for future weeks usually appear a few days before kickoff.</li>
     </ol>
     <p>A positive EV only means the model disagrees with the market. Use the track record above to judge whether those disagreements have made money.</p>
   </section>
@@ -338,6 +346,7 @@ const state = {
   juice: store.get("juice", -110),
   week: store.get("week", null),
   edits: store.get("edits", {}),
+  qbOnly: store.get("qbOnly", false),
 };
 
 // ---------- math ----------
@@ -393,13 +402,26 @@ function candidates(g, L) {
   return out;
 }
 
+// A team starts a different QB than in its previous game (unknown until nflverse lists starters)
+const qbChange = g => g.home_qb_change === true || g.away_qb_change === true;
+const qbListed = g => g.home_qb_change != null && g.away_qb_change != null;
+const shortName = n => String(n).split(" ").slice(1).join(" ") || n;
+function qbTag(g) {
+  const parts = [];
+  for (const side of ["away", "home"]) if (g[side + "_qb_change"] === true)
+    parts.push(`${g[side + "_team"]}: ${shortName(g[side + "_qb_name"])} for ${shortName(g[side + "_qb_prev_name"])}`);
+  return parts.length ? `<span class="qb-tag" title="Starting QB differs from that team's previous game">QB change · ${esc(parts.join(", "))}</span>` : "";
+}
+
 // The deterministic choice: best EV among enabled markets, bet only if it clears the threshold
+// (and, with "QB change only", only on games where a starter changed)
 function decide(g, useEdits) {
   const options = candidates(g, linesFor(g, useEdits)).filter(c => state.markets.has(c.market));
   if (!options.length) return { bet: null, best: null };
   let best = options[0];
   for (const c of options) if (c.ev > best.ev + 1e-12) best = c;
-  return { bet: best.ev * 100 >= state.minEv ? best : null, best };
+  const excluded = state.qbOnly && !qbChange(g);
+  return { bet: best.ev * 100 >= state.minEv && !excluded ? best : null, best, excluded };
 }
 
 function grade(g, bet) {
@@ -487,7 +509,7 @@ async function toggleBet(gameId, on) {
       game_id: g.game_id, season: g.season, week: g.week, home_team: g.home_team, away_team: g.away_team,
       market: bet.market, side: bet.side, label: bet.label, odds: bet.odds,
       line: bet.market === "spread" ? L.spread_line : bet.market === "total" ? L.total_line : null,
-      p: bet.p, ev: bet.ev, stake: 1, mode: state.mode,
+      p: bet.p, ev: bet.ev, stake: 1, mode: state.mode, qb_change: qbChange(g),
       by: tracker.user ? await tracker.user.id() : null, at: new Date().toISOString(),
     });
   } catch (e) {
@@ -520,7 +542,7 @@ function renderWeek() {
 
   const rows = [], chips = [];
   for (const g of games) {
-    const { bet, best } = decide(g, true);
+    const { bet, best, excluded } = decide(g, true);
     const L = linesFor(g, true);
     const e = state.edits[g.game_id] || {};
     const input = (k, v, step) => `<input class="line-in num${k in e && e[k] !== g[k] ? " edited" : ""}" type="number" step="${step}" data-game="${esc(g.game_id)}" data-key="${k}" value="${has(v) ? v : ""}" placeholder="—" aria-label="${k.replace(/_/g, " ")} for ${esc(g.away_team)} at ${esc(g.home_team)}">`;
@@ -534,13 +556,14 @@ function renderWeek() {
       pCell = fmtPct(bet.p); evCell = fmtSigned(bet.ev * 100, 1) + "%";
       chips.push(`<span class="chip">${esc(bet.label)} <span class="num">${fmtOdds(bet.odds)} · EV ${fmtSigned(bet.ev * 100, 1)}%</span></span>`);
     } else if (best) {
-      pickCell = `<span class="pass">Pass</span><span class="sub">best: ${esc(best.label)} ${fmtSigned(best.ev * 100, 1)}%</span>`;
+      const why = excluded ? (qbListed(g) ? "no QB change · " : "starters not listed yet · ") : "";
+      pickCell = `<span class="pass">Pass</span><span class="sub">${why}best: ${esc(best.label)} ${fmtSigned(best.ev * 100, 1)}%</span>`;
     } else {
       pickCell = `<span class="pass">Needs lines</span>`;
     }
     const placed = tracker.bets.get(g.game_id);
     rows.push(`<tr${placed ? ' class="placed"' : ""}>
-      <td><span class="matchup">${esc(g.away_team)} @ ${esc(g.home_team)}</span><span class="sub">${esc(date)}${g.location === "Neutral" ? " · neutral" : ""}${esc(finalScore)}</span></td>
+      <td><span class="matchup">${esc(g.away_team)} @ ${esc(g.home_team)}</span><span class="sub">${esc(date)}${g.location === "Neutral" ? " · neutral" : ""}${esc(finalScore)}</span>${qbTag(g)}</td>
       <td class="r num">${esc(g.home_team)} ${homePts.toFixed(1)}–${awayPts.toFixed(1)}<span class="sub">margin ${fmtSigned(g.margin, 1)}, total ${g.total_pred.toFixed(1)}</span></td>
       <td class="r">${input("spread_line", has(L.spread_line) ? -L.spread_line : null, 0.5)}</td>
       <td class="r">${input("total_line", L.total_line, 0.5)}</td>
@@ -555,7 +578,7 @@ function renderWeek() {
   }
   document.getElementById("games").innerHTML = rows.join("");
   document.getElementById("slate").innerHTML = chips.length ? chips.join("") :
-    `<span class="empty">No game clears the ${state.minEv}% edge with these markets. Passing on the whole week is a valid outcome.</span>`;
+    `<span class="empty">No ${state.qbOnly ? "QB-change game" : "game"} clears the ${state.minEv}% edge with these markets. Passing on the whole week is a valid outcome.</span>`;
 }
 
 // ---------- render: record ----------
@@ -572,7 +595,7 @@ function renderRecord() {
   let running = 0, eligible = 0;
   for (const g of DATA.games) {
     if (!has(g.result)) continue;
-    eligible++;
+    if (!state.qbOnly || qbChange(g)) eligible++;
     const { bet } = decide(g, false);   // record uses the original closing lines, never edits
     const gr = grade(g, bet);
     if (!gr) continue;
@@ -582,7 +605,7 @@ function renderRecord() {
   const all = summarize(bets);
   const tile = (label, value, note) => `<div class="tile"><div class="label">${label}</div><div class="value num">${value}</div>${note ? `<div class="note">${note}</div>` : ""}</div>`;
   document.getElementById("tiles").innerHTML = [
-    tile("Bets", all.n, `of ${eligible} graded games`),
+    tile("Bets", all.n, `of ${eligible} graded ${state.qbOnly ? "QB-change " : ""}games`),
     tile("Record", `${all.w}–${all.l}${all.p ? "–" + all.p : ""}`, "W–L–P"),
     tile("Hit rate", all.n ? fmtPct(all.hit) : "—", "52.4% breaks even at −110"),
     tile("Units", all.n ? fmtSigned(all.units, 1) : "—", "1u flat stakes"),
@@ -604,6 +627,8 @@ function renderRecord() {
   const slices = [["All", bets]];
   for (const s of [...new Set(bets.map(b => b.g.season))]) slices.push([`${s} season`, bets.filter(b => b.g.season === s)]);
   for (const m of MARKETS) if (state.markets.has(m)) slices.push([MARKET_LABEL[m], bets.filter(b => b.bet.market === m)]);
+  slices.push(["QB change games", bets.filter(b => qbChange(b.g))]);
+  if (!state.qbOnly) slices.push(["No QB change", bets.filter(b => !qbChange(b.g))]);
   document.getElementById("breakdown").innerHTML = slices.map(([name, list]) => {
     const s = summarize(list);
     return `<tr><td>${name}</td><td class="r num">${s.n}</td><td class="r num">${s.w}–${s.l}–${s.p}</td><td class="r num">${s.n ? fmtPct(s.hit) : "—"}</td><td class="r num">${s.n ? fmtSigned(s.units, 1) : "—"}</td><td class="r num">${s.n ? fmtSigned(s.roi * 100, 1) + "%" : "—"}</td></tr>`;
@@ -819,6 +844,14 @@ minEv.addEventListener("input", () => { const v = parseFloat(minEv.value); if (i
 const juice = document.getElementById("juice");
 juice.value = state.juice;
 juice.addEventListener("input", () => { const v = parseFloat(juice.value); if (validOdds(v)) { state.juice = v; store.set("juice", v); renderAll(); } });
+document.querySelectorAll("#qbOnly button").forEach(btn => {
+  btn.setAttribute("aria-pressed", (btn.dataset.qb === "change") === state.qbOnly);
+  btn.addEventListener("click", () => {
+    state.qbOnly = btn.dataset.qb === "change"; store.set("qbOnly", state.qbOnly);
+    document.querySelectorAll("#qbOnly button").forEach(b => b.setAttribute("aria-pressed", b === btn));
+    renderAll();
+  });
+});
 document.querySelectorAll("#mode button").forEach(btn => {
   btn.setAttribute("aria-pressed", btn.dataset.mode === state.mode);
   btn.addEventListener("click", () => {

@@ -41,12 +41,42 @@ def load_schedule(refresh=False):
     return pd.read_csv(GAMES_PATH)
 
 
+def team_sides(schedule):
+    """One row per (game, team) in schedule order, with that team's listed starter (qb_id, qb_name),
+    the most recent listed starter at or before this game (qb_now, carried forward through games not
+    yet listed) and the previous game's starter (qb_prev, qb_prev_name)."""
+    cols = ["game_id", "season", "week", "gameday", "gametime"]
+    sides = pd.concat([schedule[cols + [f"{s}_team", f"{s}_qb_id", f"{s}_qb_name"]].set_axis(
+        cols + ["team", "qb_id", "qb_name"], axis=1).assign(side=s) for s in ("home", "away")])
+    sides = sides[sides["team"].notna()].sort_values(["season", "week", "gameday", "gametime", "game_id"])
+    by_team = sides.groupby("team")
+    sides["qb_now"] = by_team["qb_id"].ffill()
+    sides["qb_prev"] = by_team["qb_now"].shift()
+    sides["qb_prev_name"] = by_team["qb_name"].ffill().groupby(sides["team"]).shift()
+    return sides
+
+
+def qb_changes(schedule):
+    """Per game, whether each team starts a different QB than in its previous game (across seasons
+    too: a new week-1 starter counts). Null until nflverse lists the starter."""
+    sides = team_sides(schedule)
+    listed = sides["qb_id"].notna() & sides["qb_prev"].notna()
+    sides["qb_change"] = np.where(listed, sides["qb_id"] != sides["qb_prev"], None)
+    out = sides.pivot(index="game_id", columns="side", values=["qb_change", "qb_name", "qb_prev_name"])
+    out.columns = [f"{side}_{col}" for col, side in out.columns]
+    return out
+
+
 def predict(season, weeks=None):
     """Simulate every game in the given weeks, fitting only on plays before each week. Seeds match
     run_backtest.py, so a week that has been backtested reproduces the same numbers."""
     from game_sim import GamePredictor
 
     plays, schedule = load_epa_plays(), load_schedule()
+    # A starter nflverse hasn't listed yet is the team's most recent listed one
+    current = team_sides(schedule).set_index(["game_id", "side"])["qb_now"]
+    schedule = schedule.assign(home_qb_id=schedule["game_id"].map(current.xs("home", level="side")),
+                               away_qb_id=schedule["game_id"].map(current.xs("away", level="side")))
     season_games = schedule[(schedule["season"] == season) & schedule["home_team"].notna()]
     weeks = weeks or sorted(season_games["week"].unique())
     last = plays.loc[plays["season"] == plays["season"].max(), ["season", "week"]].max()
@@ -111,7 +141,8 @@ def build(refresh=False):
     schedule = load_schedule(refresh).set_index("game_id")
     games = load_predictions()
     extra = schedule.reindex(games["game_id"])[LINE_COLUMNS + ["gameday", "gametime", "location"]]
-    games = pd.concat([games.reset_index(drop=True), extra.reset_index(drop=True)], axis=1)
+    qb = qb_changes(schedule.reset_index()).reindex(games["game_id"])
+    games = pd.concat([games.reset_index(drop=True), extra.reset_index(drop=True), qb.reset_index(drop=True)], axis=1)
     games = games.sort_values(["season", "week", "gameday", "gametime", "game_id"]).reset_index(drop=True)
 
     plays = load_epa_plays()
