@@ -9,6 +9,11 @@ The board reads every backtest_*.csv and predictions_*.csv in Data/Team_Model, j
 prices from the nflverse schedule, and writes one self-contained HTML page. The pick rule runs in
 the page, so lines can be edited there to match a sportsbook and the rule's thresholds tuned
 against the graded games.
+
+build also writes betting_board_page.html, the same page without its document wrapper, which is
+what gets published to the shared claude.ai board. There, the "Bet it" boxes and the "Bets we
+placed" tab save to the board's shared database (one bets/<game_id> document per bet); the local
+file shows the board without them.
 """
 import json
 import sys
@@ -118,9 +123,13 @@ def build(refresh=False):
         "built": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M"),
     }
     BOARD_DIR.mkdir(parents=True, exist_ok=True)
+    page = TEMPLATE.read_text().replace("/*__BOARD_DATA__*/null", json.dumps(payload, separators=(",", ":")))
+    # The published page gets its document wrapper from claude.ai; the local copy needs its own
+    (BOARD_DIR / "betting_board_page.html").write_text(page)
     path = BOARD_DIR / "betting_board.html"
-    html = TEMPLATE.read_text().replace("/*__BOARD_DATA__*/null", json.dumps(payload, separators=(",", ":")))
-    path.write_text(html)
+    path.write_text('<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
+                    '<meta name="viewport" content="width=device-width, initial-scale=1">\n</head>\n<body>\n'
+                    + page + "</body>\n</html>\n")
     print(f"{len(games)} games ({games['result'].notna().sum()} graded) -> {path}")
 
 

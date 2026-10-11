@@ -1,8 +1,3 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Quantum Route Board</title>
 <style>
 :root {
@@ -167,9 +162,27 @@ summary { cursor: pointer; font-weight: 600; font-size: 13px; color: var(--text-
 .how code { font-size: 12px; background: var(--surface-2); padding: 1px 4px; border-radius: 4px; }
 .split { display: grid; grid-template-columns: 1fr; gap: 16px; }
 @media (min-width: 900px) { .split { grid-template-columns: 3fr 2fr; } }
+.tabs { display: flex; gap: 4px; margin-top: 16px; border-bottom: 1px solid var(--border); }
+.tabs button {
+  font: inherit; font-size: 14px; font-weight: 600; color: var(--text-secondary); background: none; cursor: pointer;
+  border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; padding: 8px 12px;
+}
+.tabs button[aria-selected="true"] { color: var(--text-primary); border-bottom-color: var(--accent); }
+.tabs .count { font-weight: 500; color: var(--text-muted); margin-left: 4px; }
+.bet-col[hidden] { display: none; }
+.bet-toggle { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); cursor: pointer; }
+.bet-toggle input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.bet-toggle input:disabled { cursor: not-allowed; }
+.bet-toggle.on { color: var(--accent-ink); font-weight: 600; }
+tr.placed td { background: var(--pick-bg); }
+.status { font-size: 12px; color: var(--critical-ink); margin: 8px 0 0; }
+.stake-in { width: 64px; text-align: right; padding: 4px 6px; }
+.remove { font: inherit; font-size: 12px; background: none; border: 1px solid var(--border); border-radius: 6px; color: var(--text-secondary); cursor: pointer; padding: 3px 8px; }
+.remove:hover { color: var(--critical-ink); border-color: var(--critical-ink); }
+.who { display: inline-flex; align-items: center; gap: 6px; }
+.who img { width: 18px; height: 18px; border-radius: 50%; }
+.differs { font-size: 12px; color: var(--warning-ink); }
 </style>
-</head>
-<body>
 <div class="wrap">
   <header>
     <h1>Quantum Route betting board</h1>
@@ -177,6 +190,12 @@ summary { cursor: pointer; font-weight: 600; font-size: 13px; color: var(--text-
   </header>
   <div class="banner" id="banner" hidden></div>
 
+  <div class="tabs" role="tablist" aria-label="Views">
+    <button type="button" role="tab" id="tab-board" aria-controls="view-board" aria-selected="true" data-view="board">Board</button>
+    <button type="button" role="tab" id="tab-tracker" aria-controls="view-tracker" aria-selected="false" data-view="tracker">Bets we placed<span class="count num" id="tracker-count"></span></button>
+  </div>
+
+  <div id="view-board" role="tabpanel" aria-labelledby="tab-board">
   <div class="controls" role="group" aria-label="Pick rule">
     <label class="control"><span>Week</span><select id="week"></select></label>
     <div class="control"><span>Markets</span>
@@ -212,6 +231,7 @@ summary { cursor: pointer; font-weight: 600; font-size: 13px; color: var(--text-
           <th class="r">Home ML</th>
           <th class="r">Away ML</th>
           <th>Pick</th>
+          <th class="bet-col" hidden>We bet</th>
           <th class="r">Win prob</th>
           <th class="r">EV</th>
           <th>Result</th>
@@ -220,6 +240,8 @@ summary { cursor: pointer; font-weight: 600; font-size: 13px; color: var(--text-
       </table>
     </div>
     <p class="meta" id="edit-note">Type your sportsbook's numbers into the line boxes; the pick updates instantly. Edited boxes are outlined. <button class="reset" id="reset" type="button">Reset this week's edits</button></p>
+    <p class="meta" id="bet-note"></p>
+    <p class="status" id="board-status" role="status" hidden></p>
   </section>
 
   <section class="card" aria-labelledby="record-title">
@@ -266,6 +288,37 @@ summary { cursor: pointer; font-weight: 600; font-size: 13px; color: var(--text-
     </ol>
     <p>A positive EV only means the model disagrees with the market. Use the track record above to judge whether those disagreements have made money.</p>
   </section>
+  </div>
+
+  <div id="view-tracker" role="tabpanel" aria-labelledby="tab-tracker" hidden>
+    <section class="card" aria-labelledby="tracker-title">
+      <div class="card-head">
+        <h2 id="tracker-title">Bets we placed</h2>
+        <span class="meta" id="tracker-note"></span>
+      </div>
+      <div class="tiles" id="tracker-tiles"></div>
+      <p class="verdict" id="tracker-verdict"></p>
+      <div class="scroll">
+        <table class="games">
+          <thead><tr>
+            <th>Game</th>
+            <th>Bet</th>
+            <th class="r">Price</th>
+            <th class="r">Stake (u)</th>
+            <th class="r">Model prob</th>
+            <th class="r">EV</th>
+            <th>Placed by</th>
+            <th>Result</th>
+            <th class="r">Units</th>
+            <th aria-label="Remove"></th>
+          </tr></thead>
+          <tbody id="tracker-rows"></tbody>
+        </table>
+      </div>
+      <p class="empty" id="tracker-empty" hidden></p>
+      <p class="status" id="tracker-status" role="status" hidden></p>
+    </section>
+  </div>
 </div>
 
 <script>
@@ -380,6 +433,74 @@ function defaultWeek() {
 }
 if (!weeks.includes(state.week)) state.week = defaultWeek();
 
+// ---------- bet tracking (shared, through the artifact's db) ----------
+// One document per game at bets/<game_id>: the bet exactly as it was when someone ticked it, so later
+// rule or line changes never rewrite what was actually placed.
+const tracker = { db: null, user: null, canWrite: true, bets: new Map(), loaded: false, current: new Map() };
+
+function betCell(g, bet, placed) {
+  tracker.current.set(g.game_id, bet);
+  if (placed) {
+    const differs = !bet || bet.label !== placed.label || bet.odds !== placed.odds;
+    return `<label class="bet-toggle on"><input type="checkbox" checked data-bet="${esc(g.game_id)}"${tracker.canWrite ? "" : " disabled"}> ${esc(placed.label)}</label>${differs ? `<span class="sub differs">pick is now ${bet ? esc(bet.label) + " " + fmtOdds(bet.odds) : "pass"}</span>` : ""}`;
+  }
+  if (!bet) return "";
+  const title = tracker.canWrite ? `Add ${bet.label} to the bets we placed` : "Your access to this page is view-only";
+  return `<label class="bet-toggle" title="${esc(title)}"><input type="checkbox" data-bet="${esc(g.game_id)}"${tracker.canWrite ? "" : " disabled"}> Bet it</label>`;
+}
+
+// Grades a stored bet against the game's final score
+function gradePlaced(g, b) {
+  if (!g || !has(g.result)) return null;
+  const s = b.market === "spread" ? (b.side === "home" ? Math.sign(g.result - b.line) : Math.sign(b.line - g.result))
+    : b.market === "total" ? (b.side === "over" ? Math.sign(g.total - b.line) : Math.sign(b.line - g.total))
+    : (b.side === "home" ? Math.sign(g.result) : Math.sign(-g.result));
+  const stake = has(b.stake) && b.stake > 0 ? b.stake : 1;
+  const units = s > 0 ? stake * (decimal(b.odds) - 1) : s < 0 ? -stake : 0;
+  return { outcome: s > 0 ? "win" : s < 0 ? "loss" : "push", units };
+}
+
+function showStatus(id, message) {
+  const node = document.getElementById(id);
+  node.textContent = message || "";
+  node.hidden = !message;
+}
+function writeError(e) {
+  if (e && e.code === "invalid_argument") {
+    tracker.canWrite = false;
+    return "This page is view-only for you, so bets can't be changed. Ask the owner for Contributor access.";
+  }
+  if (e && e.code === "quota_exceeded") return "The bet log is full. Remove old bets to add new ones.";
+  return "Couldn't save that change. Check your connection and try again.";
+}
+
+async function toggleBet(gameId, on) {
+  const ref = tracker.db.doc("bets/" + gameId);
+  showStatus("board-status", "");
+  try {
+    if (!on) { await ref.delete(); return; }
+    const bet = tracker.current.get(gameId);
+    const g = DATA.games.find(x => x.game_id === gameId);
+    if (!bet || !g) return;
+    const L = linesFor(g, true);
+    await ref.set({
+      game_id: g.game_id, season: g.season, week: g.week, home_team: g.home_team, away_team: g.away_team,
+      market: bet.market, side: bet.side, label: bet.label, odds: bet.odds,
+      line: bet.market === "spread" ? L.spread_line : bet.market === "total" ? L.total_line : null,
+      p: bet.p, ev: bet.ev, stake: 1, mode: state.mode,
+      by: tracker.user ? await tracker.user.id() : null, at: new Date().toISOString(),
+    });
+  } catch (e) {
+    showStatus("board-status", writeError(e));
+    renderWeek();
+  }
+}
+
+document.getElementById("games").addEventListener("change", e => {
+  const t = e.target;
+  if (t.matches("[data-bet]")) toggleBet(t.dataset.bet, t.checked);
+});
+
 // ---------- render: week ----------
 function renderWeek() {
   const games = DATA.games.filter(g => weekKey(g) === state.week);
@@ -417,7 +538,8 @@ function renderWeek() {
     } else {
       pickCell = `<span class="pass">Needs lines</span>`;
     }
-    rows.push(`<tr>
+    const placed = tracker.bets.get(g.game_id);
+    rows.push(`<tr${placed ? ' class="placed"' : ""}>
       <td><span class="matchup">${esc(g.away_team)} @ ${esc(g.home_team)}</span><span class="sub">${esc(date)}${g.location === "Neutral" ? " · neutral" : ""}${esc(finalScore)}</span></td>
       <td class="r num">${esc(g.home_team)} ${homePts.toFixed(1)}–${awayPts.toFixed(1)}<span class="sub">margin ${fmtSigned(g.margin, 1)}, total ${g.total_pred.toFixed(1)}</span></td>
       <td class="r">${input("spread_line", has(L.spread_line) ? -L.spread_line : null, 0.5)}</td>
@@ -425,6 +547,7 @@ function renderWeek() {
       <td class="r">${input("home_moneyline", L.home_moneyline, 5)}</td>
       <td class="r">${input("away_moneyline", L.away_moneyline, 5)}</td>
       <td>${pickCell}</td>
+      <td class="bet-col"${tracker.db ? "" : " hidden"}>${betCell(g, bet, placed)}</td>
       <td class="r num">${pCell}</td>
       <td class="r num">${evCell}</td>
       <td>${badge(gr)}</td>
@@ -566,6 +689,110 @@ function renderChart(bets) {
   hit.addEventListener("pointerleave", () => { tip.style.opacity = 0; cross.setAttribute("opacity", 0); dot.setAttribute("opacity", 0); });
 }
 
+// ---------- render: tracker ----------
+const GAME_BY_ID = new Map(DATA.games.map(g => [g.game_id, g]));
+
+async function renderTracker() {
+  const count = document.getElementById("tracker-count");
+  const empty = document.getElementById("tracker-empty");
+  const rowsEl = document.getElementById("tracker-rows");
+  const tiles = document.getElementById("tracker-tiles");
+  const verdict = document.getElementById("tracker-verdict");
+  document.getElementById("tracker-note").textContent = `Results as of ${DATA.built} · rebuild the board to grade newer games`;
+
+  if (!tracker.db) {
+    count.textContent = "";
+    tiles.innerHTML = ""; verdict.textContent = ""; rowsEl.innerHTML = "";
+    empty.hidden = false;
+    empty.textContent = "Bet tracking is saved on the shared online board. Open the claude.ai link to tick bets and see this log.";
+    return;
+  }
+  const placed = [...tracker.bets.values()].sort((a, b) => b.season - a.season || b.week - a.week
+    || String(GAME_BY_ID.get(b.game_id)?.gameday).localeCompare(String(GAME_BY_ID.get(a.game_id)?.gameday)));
+  count.textContent = placed.length ? String(placed.length) : "";
+
+  const rows = placed.map(b => ({ b, g: GAME_BY_ID.get(b.game_id), gr: gradePlaced(GAME_BY_ID.get(b.game_id), b) }));
+  const settled = rows.filter(r => r.gr);
+  const open = rows.filter(r => !r.gr);
+  const stakeOf = b => (has(b.stake) && b.stake > 0 ? b.stake : 1);
+  const w = settled.filter(r => r.gr.outcome === "win").length, l = settled.filter(r => r.gr.outcome === "loss").length;
+  const units = settled.reduce((s, r) => s + r.gr.units, 0);
+  const staked = settled.reduce((s, r) => s + stakeOf(r.b), 0);
+  const atRisk = open.reduce((s, r) => s + stakeOf(r.b), 0);
+  const tile = (label, value, note) => `<div class="tile"><div class="label">${label}</div><div class="value num">${value}</div>${note ? `<div class="note">${note}</div>` : ""}</div>`;
+  tiles.innerHTML = [
+    tile("Bets placed", placed.length, `${settled.length} settled · ${open.length} open`),
+    tile("Record", settled.length ? `${w}–${l}${settled.length - w - l ? "–" + (settled.length - w - l) : ""}` : "—", "W–L–P"),
+    tile("Units", settled.length ? fmtSigned(units, 2) : "—", `on ${staked.toFixed(1)}u staked`),
+    tile("ROI", staked ? fmtSigned(units / staked * 100, 1) + "%" : "—", "units ÷ staked"),
+    tile("Open risk", fmtNum(atRisk.toFixed(1)) + "u", `${open.length} bet${open.length === 1 ? "" : "s"} waiting on results`),
+  ].join("");
+  verdict.textContent = !placed.length ? "" : settled.length < 30
+    ? `${settled.length} settled bet${settled.length === 1 ? "" : "s"} is far too few to judge. Expect swings of several units either way from luck alone.`
+    : `${settled.length} settled bets at ${fmtPct(w / Math.max(w + l, 1))}. You need about 52.4% to break even at −110.`;
+
+  empty.hidden = placed.length > 0;
+  empty.textContent = tracker.loaded ? "No bets tracked yet. On the Board tab, tick “Bet it” next to a pick to add it here." : "Loading the bet log…";
+  rowsEl.innerHTML = rows.map(({ b, g, gr }) => {
+    const finalScore = g && has(g.home_score) ? `final ${g.away_score}–${g.home_score}` : (g?.gameday ? new Date(g.gameday + "T12:00:00").toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" }) : "");
+    const input = `<input class="stake-in num" type="number" min="0.1" step="0.5" value="${stakeOf(b)}" data-stake="${esc(b.game_id)}" aria-label="Stake in units for ${esc(b.label)}"${tracker.canWrite ? "" : " disabled"}>`;
+    return `<tr>
+      <td><span class="matchup">${esc(b.away_team)} @ ${esc(b.home_team)}</span><span class="sub">${b.season} wk ${b.week} · ${esc(finalScore)}</span></td>
+      <td><span class="pick">${esc(b.label)}</span><span class="sub">${esc(MARKET_LABEL[b.market] || b.market)}</span></td>
+      <td class="r num">${fmtOdds(b.odds)}</td>
+      <td class="r">${input}</td>
+      <td class="r num">${has(b.p) ? fmtPct(b.p) : "—"}</td>
+      <td class="r num">${has(b.ev) ? fmtSigned(b.ev * 100, 1) + "%" : "—"}</td>
+      <td><span class="who" data-uid="${esc(b.by || "")}"><img alt="" hidden><span></span></span><span class="sub">${b.at ? esc(new Date(b.at).toLocaleDateString(undefined, { month: "short", day: "numeric" })) : ""}</span></td>
+      <td>${gr ? badge(gr) : '<span class="sub" style="display:inline">open</span>'}</td>
+      <td class="r num">${gr ? fmtSigned(gr.units) : ""}</td>
+      <td>${tracker.canWrite ? `<button type="button" class="remove" data-remove="${esc(b.game_id)}" aria-label="Remove ${esc(b.label)}">Remove</button>` : ""}</td>
+    </tr>`;
+  }).join("");
+
+  // Names resolve per viewer and can change, so only ids are stored; look them up on every render
+  const ids = [...new Set(placed.map(b => b.by).filter(Boolean))];
+  const people = ids.length && tracker.user ? await tracker.user.profiles(ids) : {};
+  rowsEl.querySelectorAll(".who").forEach(node => {
+    const prof = people[node.dataset.uid];
+    node.querySelector("span").textContent = prof ? (prof.isMe ? "You" : prof.name || "Someone") : "Someone";
+    const img = node.querySelector("img");
+    if (prof) { img.src = prof.avatarUrl; img.hidden = false; }
+  });
+}
+
+document.getElementById("tracker-rows").addEventListener("change", async e => {
+  const t = e.target;
+  if (!t.matches("[data-stake]")) return;
+  const v = parseFloat(t.value);
+  if (!(v > 0)) { renderTracker(); return; }
+  showStatus("tracker-status", "");
+  try { await tracker.db.doc("bets/" + t.dataset.stake).update({ stake: v }); }
+  catch (err) { showStatus("tracker-status", writeError(err)); renderTracker(); }
+});
+document.getElementById("tracker-rows").addEventListener("click", async e => {
+  const t = e.target.closest("[data-remove]");
+  if (!t) return;
+  showStatus("tracker-status", "");
+  try { await tracker.db.doc("bets/" + t.dataset.remove).delete(); }
+  catch (err) { showStatus("tracker-status", writeError(err)); }
+});
+
+// ---------- tabs ----------
+function showView(view) {
+  for (const btn of document.querySelectorAll(".tabs [data-view]")) {
+    const on = btn.dataset.view === view;
+    btn.setAttribute("aria-selected", on);
+    document.getElementById("view-" + btn.dataset.view).hidden = !on;
+  }
+  store.set("view", view);
+  if (view === "board") renderRecord();  // the chart measures its width, which is 0 while hidden
+}
+document.querySelectorAll(".tabs [data-view]").forEach(btn => btn.addEventListener("click", () => {
+  showView(btn.dataset.view);
+  try { history.replaceState(null, "", "#" + btn.dataset.view); } catch { /* not allowed in this frame */ }
+}));
+
 // ---------- controls ----------
 function renderAll() { renderWeek(); renderRecord(); }
 
@@ -626,7 +853,34 @@ document.getElementById("meta").textContent =
 
 let resizeTimer;
 window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(renderRecord, 120); });
+const startView = ["board", "tracker"].includes(location.hash.slice(1)) ? location.hash.slice(1) : store.get("view", "board");
+showView(startView === "tracker" ? "tracker" : "board");
 renderAll();
+renderTracker();
+
+// The shared bet log lights up only on the published page; the local file renders without it
+(async () => {
+  const use = window.claude && window.claude.use;
+  const [db, user] = use ? await Promise.all([window.claude.use("db"), window.claude.use("user")]) : [null, null];
+  tracker.db = db; tracker.user = user;
+  const note = document.getElementById("bet-note");
+  if (!db) {
+    note.textContent = "Open the shared online board to mark which picks you actually bet.";
+    renderTracker();
+    return;
+  }
+  const canWrite = user ? await user.can("data.write") : null;
+  tracker.canWrite = canWrite !== false;
+  note.textContent = tracker.canWrite
+    ? "Tick “Bet it” on a pick you actually placed. It's saved for everyone on this board, with the line and price as shown."
+    : "You can see the bets we placed, but your access is view-only.";
+  renderWeek();
+  db.collection("bets").onSnapshot(snap => {
+    tracker.bets = new Map(snap.docs.map(d => [d.id, d.data()]));
+    tracker.loaded = true;
+    renderWeek(); renderTracker();
+  }, () => {
+    showStatus("tracker-status", "The bet log stopped updating. Reload the page to reconnect.");
+  });
+})();
 </script>
-</body>
-</html>

@@ -12,6 +12,7 @@ from team_strength import TeamStrengthModel
 KICK_ENDINGS = ["punt", "field_goal", "missed_fg"]  # the kick is a snap that ends the drive
 RELATIVE_ENDINGS = ["punt", "turnover", "downs", "missed_fg"]
 PHYSICS_SEASONS = 3  # league-wide play outcomes come from the most recent seasons of history
+RENAMED_TEAMS = {"OAK": "LV"}  # relocations since 2018, so carried-over form follows the franchise
 
 
 class EpaYardsModel(EmpiricalYardsModel):
@@ -184,6 +185,7 @@ class GamePredictor:
 
     def __init__(self, plays, season, week, n_chains=2, n_burn=500, n_draws=1000, seed=0, verbose=False):
         history = before(plays, season, week).reset_index(drop=True)
+        history[["posteam", "defteam"]] = history[["posteam", "defteam"]].replace(RENAMED_TEAMS)
         physics = history[history["season"] >= history["season"].max() - PHYSICS_SEASONS + 1]
 
         self.base_calls = PlayCallModel(physics)
@@ -260,6 +262,7 @@ class GamePredictor:
     def simulate(self, home, away, neutral=False, n_draws=50, sims_per_draw=8, seed=0):
         """Array of (home_points, away_points), one row per simulated game."""
         rng = np.random.default_rng(seed)
+        home, away = RENAMED_TEAMS.get(home, home), RENAMED_TEAMS.get(away, away)
         sign = 0 if neutral else 1
         draws = rng.integers(len(self.s_flat["mu"]), size=n_draws)
         results = []
