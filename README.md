@@ -19,6 +19,8 @@ quantum-route/
 │   ├── Drive_Model/           Play loading, drive building, drive simulator
 │   ├── Scoring_Model/         Expected points (EP) and EPA per play
 │   ├── Team_Model/            MCMC team strength, play-calling tendencies, game sim, backtest
+│   ├── Dashboard/             Streamlit dashboard over the backtest history
+│   ├── db.py                  DuckDB (SQL) store for backtest history
 │   └── Main.py                Scratch entry point (loads the schedule)
 ├── GAMES/<season>/<week>/     One CSV per game, every play (2018–2025)
 ├── Data/                      Generated outputs and caches (git-ignored)
@@ -52,6 +54,17 @@ quantum-route/
 - **`run_backtest.py`**: a walk-forward backtest. Each week is predicted using only the games before it, and the predictions are scored against the closing spread, total and moneyline. The scores include mean absolute error (MAE), Brier score, and against-the-spread (ATS) record by edge size.
 - **`coach_vs_player.py`**: a crossed random-effects model that splits offensive performance among the head coach, the starting QB and the rest of the roster.
 
+### 5. Backtest history and dashboard: `Code/db.py`, `Code/Dashboard/`
+Every backtest run is saved to a DuckDB database at `Data/quantum_route.duckdb`, so runs can be compared instead of overwriting `backtest_<season>.csv`. Each run records its season, start and finish time, git commit (and whether `Code/` had uncommitted changes) and an optional note. Predictions are saved week by week as the backtest goes, so a run that stops partway still shows up.
+
+The scoring lives in SQL views that match `run_backtest.py report` with no slope adjustment:
+- `run_summary`: one row per run with margin MAE, Brier score, totals MAE and ATS record, each next to the closing line's;
+- `weekly_summary`: the same accuracy by week;
+- `ats_by_edge`: cover rate by how far the model's margin is from the spread;
+- `backtest_graded`: every game with its edge, cover and win flags, for your own queries.
+
+The dashboard (`Code/Dashboard/app.py`) shows the run history, one run in detail (weekly MAE, ATS by edge, a filterable game table) and a side-by-side comparison of two runs.
+
 ## Research notes
 
 [`writeups/coaching_vs_player_effects.txt`](writeups/coaching_vs_player_effects.txt) covers 2018–2025 (4,254 team-games):
@@ -73,8 +86,10 @@ Requires Python 3.10+.
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install numpy pandas pyarrow
+pip install numpy pandas pyarrow duckdb streamlit
 ```
+
+- `duckdb` stores the backtest history and `streamlit` runs the dashboard.
 
 - `pyarrow` is needed for the parquet caches in `Data/`.
 - To re-export game data from nflverse, also install `nflreadpy` and `polars`.
@@ -98,9 +113,17 @@ cd Code/Scoring_Model && python run_ep_model.py
 # Team strength + coaching tendencies for a season (defaults to the latest)
 cd Code/Team_Model && python run_team_model.py 2025
 
-# Walk-forward backtest for a season, then score all saved seasons against the market
-cd Code/Team_Model && python run_backtest.py 2025
+# Walk-forward backtest for a season, then score all saved seasons against the market.
+# Each run is also saved to the backtest history; the optional note labels it.
+cd Code/Team_Model && python run_backtest.py 2025 "tighter team priors"
 cd Code/Team_Model && python run_backtest.py report
+
+# Backtest history: load backtest CSVs from before the history existed, list runs,
+# open the dashboard, or query the database directly (needs the duckdb CLI)
+cd Code && python db.py import
+cd Code && python db.py history
+streamlit run Code/Dashboard/app.py
+duckdb Data/quantum_route.duckdb "SELECT run_id, mae_model, mae_market FROM run_summary"
 
 # Coach vs. QB vs. roster decomposition
 cd Code/Team_Model && python coach_vs_player.py
