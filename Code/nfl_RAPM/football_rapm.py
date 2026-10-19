@@ -43,6 +43,7 @@ POSITION_GROUPS = {
     "DL": {"DE", "DT", "NT", "EDGE", "DL", "LE", "RE"},
     "LB": {"OLB", "ILB", "MLB", "LB"},
     "DB": {"CB", "S", "FS", "SS", "DB", "SAF"},
+    "SPEC": {"K", "P", "LS"},
 }
 
 
@@ -256,18 +257,63 @@ def load_plays(input_value: str) -> tuple[pd.DataFrame, dict[str, str], dict[str
     return data, best_names, best_defense_positions, best_rusher_positions
 
 
-def _position_group(position: str | None, side: str) -> str:
-    if not position:
-        return "UNK"
+def _load_nflreadpy_positions(player_ids: set[str]) -> dict[str, str]:
+    """Map observed GSIS IDs to roster positions using nflreadpy's player database."""
+    import nflreadpy as nfl
+
+    players = nfl.load_players()
+    required = {"gsis_id", "position"}
+    missing = required.difference(players.columns)
+    if missing:
+        raise ValueError(
+            "nflreadpy player database is missing required columns: "
+            + ", ".join(sorted(missing))
+        )
+    selected_columns = ["gsis_id", "position"]
+    if "ngs_position" in players.columns:
+        selected_columns.append("ngs_position")
+    database_positions: dict[str, str] = {}
+    for row in players.select(selected_columns).to_dicts():
+        raw_id = row.get("gsis_id")
+        if raw_id is None or pd.isna(raw_id):
+            continue
+        player_id = str(raw_id).strip()
+        position = next(
+            (
+                normalized
+                for raw_position in (row.get("position"), row.get("ngs_position"))
+                if (normalized := _normalize_position(raw_position)) is not None
+            ),
+            None,
+        )
+        if player_id and position:
+            database_positions[player_id] = position
+    matched = player_ids.intersection(database_positions)
+    LOG.info(
+        "nflreadpy player database supplied positions for %s/%s observed IDs (%.1f%%)",
+        f"{len(matched):,}",
+        f"{len(player_ids):,}",
+        100 * len(matched) / len(player_ids) if player_ids else 100.0,
+    )
+    return {player_id: database_positions[player_id] for player_id in matched}
+
+
+def _normalize_position(position: str | None) -> str | None:
+    if position is None or pd.isna(position):
+        return None
     normalized = re.sub(r"[^A-Z]", "", str(position).upper())
-    for group, positions in POSITION_GROUPS.items():
-        if side == "defense" and group not in {"DL", "LB", "DB"}:
-            continue
-        if side == "offense" and group in {"DL", "LB", "DB"}:
-            continue
+    for positions in POSITION_GROUPS.values():
         if normalized in positions:
-            return group
-    return "UNK"
+            return normalized
+    return None
+
+
+def _position_group(position: str | None) -> str:
+    """Map a recognized roster position independent of which side listed the player."""
+    normalized = _normalize_position(position)
+    if normalized is None:
+        return "UNK"
+    return next(group for group, positions in POSITION_GROUPS.items() if normalized in positions)
 
 
 def _load_offense_positions(
@@ -434,10 +480,26 @@ def _make_position_maps(
     rusher_positions: dict[str, str],
     user_global: dict[str, str],
     user_season: dict[tuple[str, str], str],
+    nflreadpy_positions: dict[str, str],
 ) -> tuple[dict[str, str], dict[tuple[str, str], str], dict[str, str]]:
-    offense_positions = dict(rusher_positions)
-    offense_positions.update(user_global)
-    return offense_positions, dict(user_season), dict(defense_positions)
+    def recognized_positions(source: dict[str, str]) -> dict[str, str]:
+        return {
+            player_id: normalized
+            for player_id, position in source.items()
+            if (normalized := _normalize_position(position)) is not None
+        }
+
+    offense_positions = recognized_positions(nflreadpy_positions)
+    offense_positions.update(recognized_positions(rusher_positions))
+    offense_positions.update(recognized_positions(user_global))
+    defense_position_map = recognized_positions(nflreadpy_positions)
+    defense_position_map.update(recognized_positions(defense_positions))
+    season_position_map = {
+        key: normalized
+        for key, position in user_season.items()
+        if (normalized := _normalize_position(position)) is not None
+    }
+    return offense_positions, season_position_map, defense_position_map
 
 
 def _player_position(
@@ -503,7 +565,7 @@ def _make_design(
                     season_positions,
                     defense_positions,
                 )
-                group = _position_group(position, side)
+                group = _position_group(position)
                 player_metadata.setdefault(
                     column,
                     {
@@ -531,7 +593,7 @@ def _make_design(
                     {
                         "player_id": carrier_id,
                         "player_name": names.get(carrier_id, ""),
-                        "position_group": _position_group(position, side),
+                        "position_group": _position_group(position),
                         "season": season if by_season else "",
                     },
                 )
@@ -1217,6 +1279,17 @@ def _write_diagnostics(
 
 def run_analysis(args: argparse.Namespace) -> None:
     data, names, defender_positions, rusher_positions = load_plays(args.input)
+    observed_player_ids = {
+        player_id
+        for column in ("offense_player_ids", "defense_player_ids")
+        for value in data[column]
+        for player_id in _list_values(value)
+    }
+    nflreadpy_positions = (
+        _load_nflreadpy_positions(observed_player_ids)
+        if not args.no_nflreadpy_positions
+        else {}
+    )
     score_running = _score_is_running(data)
     cleaned, dropped, yardage_mismatch_rate = clean_plays(
         data, args.cap, args.shrink, score_running
@@ -1225,7 +1298,11 @@ def run_analysis(args: argparse.Namespace) -> None:
         raise ValueError("--by-season requires a season column or derivable season in game_id")
     offense_global, offense_season = _load_offense_positions(args.positions)
     offense_positions, season_positions, defense_position_map = _make_position_maps(
-        defender_positions, rusher_positions, offense_global, offense_season
+        defender_positions,
+        rusher_positions,
+        offense_global,
+        offense_season,
+        nflreadpy_positions,
     )
     lambda_grid = args.lambda_grid
     if not lambda_grid or any(value <= 0 for value in lambda_grid):
@@ -1346,6 +1423,22 @@ def _run_selftest() -> None:
     expected = {10: 10, 15: 15, 23: 17, 55: 25, -18: -15.75, -40: -21.25}
     for value, result in expected.items():
         assert normalize_yards(value) == result, (value, normalize_yards(value), result)
+    offense_positions, season_positions, defense_positions = _make_position_maps(
+        {"defender": "UNK", "known": "UNK"},
+        {"known": "UNK"},
+        {"known": "WR", "explicit": "TE"},
+        {("2025", "explicit"): "UNK"},
+        {"known": "RB", "defender": "LB", "special": "K"},
+    )
+    assert offense_positions["known"] == "WR"
+    assert defense_positions["known"] == "RB"
+    assert defense_positions["defender"] == "LB"
+    assert _player_position(
+        "explicit", "2025", "offense", offense_positions, season_positions, defense_positions
+    ) == "TE"
+    assert _position_group("RB") == "RB"
+    assert _position_group("K") == "SPEC"
+    assert _position_group("UNK") == "UNK"
     possession_rows = pd.DataFrame(
         {
             "game_id": ["2025_01_HOM_AWY", "2025_01_HOM_AWY"],
@@ -1581,6 +1674,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input", help="CSV path, glob pattern, or directory containing CSVs")
     parser.add_argument("--outdir", default="rapm_output", help="Output directory")
     parser.add_argument("--positions", help="Optional offense player position CSV")
+    parser.add_argument(
+        "--no-nflreadpy-positions",
+        action="store_true",
+        help="Do not enrich player positions from nflreadpy.load_players()",
+    )
     parser.add_argument("--by-season", action="store_true", help="Estimate separate player-season effects")
     parser.add_argument("--cap", type=float, default=15.0, help="Yardage cap threshold (default: 15)")
     parser.add_argument("--shrink", type=float, default=0.25, help="Beyond-cap shrink factor (default: 0.25)")
