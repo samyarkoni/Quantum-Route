@@ -13,15 +13,21 @@ Python 3.10 or newer with `pandas`, `numpy`, `scipy`, `scikit-learn`, and
 
 ## Inspecting the current team CSVs
 
-The current `TEAM_PARTICIPATION_STATS/*/2025.csv` files share a 31-column schema.
-They include season/week and team metadata; play IDs and types; `yards_gained`;
-starting/ending yard markers; score, down, and distance data; defensive personnel,
-positions, and charting fields; and offense/defense player IDs and names.
-`rusher_player_id`, `rusher_position`, `posteam`, `qtr`,
-`game_seconds_remaining`, and `yardline_100` are absent from these files. The
-loader handles those fields as optional: without rusher IDs it cannot create
-ball-carrier estimates, and without `posteam` it cannot orient a running score
-differential or reliably label player teams. Player positions are looked up by
+The loader accepts optional play fields in addition to the participation
+columns, including `spread_line`, `pos_team` (or `posteam`),
+`rusher_player_id`, `rusher_player_name`, `rusher_position`,
+`rushing_player_type`, `qtr`, `game_seconds_remaining`, and `yardline_100`.
+`pos_team` is normalized to the model's canonical `posteam` field and is used to
+orient pre-play score and spread relative to the offense. A conflicting nonblank
+`posteam` value takes precedence and is reported. `spread_line` follows the
+nflverse convention: positive values favor the home team. The model converts it
+to `offense_spread`, positive when the possession team is favored, and uses it as
+a pre-game context control; rows without a confidently identified possession
+side have a missing spread control. Rusher IDs create ball-carrier effects in
+rushing models, including when the rusher is absent from the listed offensive
+participants, and `rusher_player_name` supplies the display name when needed.
+When these optional fields are absent, their associated features are omitted.
+Player positions are looked up by
 GSIS ID from `nflreadpy.load_players()`; recognized defensive position labels,
 rusher positions, and explicit `--positions` entries take precedence over the
 database fallback. Blank or unrecognized labels (including `UNK`) do not replace
