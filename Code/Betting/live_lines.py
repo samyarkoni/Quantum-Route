@@ -5,8 +5,8 @@ season's games, written as the document the board reads from its shared database
     python live_lines.py OUT.json --against PREV.json  # ... and exit 3 if nothing differs from PREV
 
 The board lays this document over the lines it was built with, so odds that nflverse posts or moves
-after a build reach the page without republishing it. Scheduled claude.ai routines run this every
-30 minutes on game days and copy OUT.json into lines/current when it changed. Standard library only, so it runs in a
+after a build reach the page without republishing it. Scheduled claude.ai routines run this hourly
+on game days and copy OUT.json into lines/current when it changed. Standard library only, so it runs in a
 fresh checkout without the project's data or packages.
 """
 import csv

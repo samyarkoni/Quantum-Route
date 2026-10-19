@@ -64,7 +64,7 @@ On the page you can:
 - switch between the raw model margin and the calibrated one (calibrated multiplies the margin by the out-of-sample slope);
 - see how the current rule would have done on every graded game, with record, units, ROI and a cumulative chart.
 
-Odds update on their own. On game days a scheduled claude.ai routine runs `live_lines.py` every 30 minutes. That covers Thursday, Sunday and Monday nights plus Sunday afternoon, all in Eastern time. The script pulls the newest season's lines, prices and scores from nflverse. When anything has changed, the routine writes them to the published board's `lines/current` document. The page lays those over the lines it was built with, so new and moved lines, and final scores, show up without a rebuild. Lines you type in still take priority. Rebuild only for new predictions.
+Odds update on their own. On game days two scheduled claude.ai routines run `live_lines.py` every hour. Together they cover Thursday, Sunday and Monday nights plus Sunday afternoon, all in Eastern time (an hour is the shortest interval routines allow). The script pulls the newest season's lines, prices and scores from nflverse. When anything has changed, the routine writes them to the published board's `lines/current` document. The page lays those over the lines it was built with, so new and moved lines, and final scores, show up without a rebuild. Lines you type in still take priority. Rebuild only for new predictions.
 
 The track record is the honest test. Over the 2024–2025 backtests, no setting clearly beats the vig.
 
