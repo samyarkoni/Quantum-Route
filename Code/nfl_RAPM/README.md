@@ -8,7 +8,8 @@ represented by a separate ball-carrier variable.
 
 ## Requirements
 
-Python 3.10 or newer with `pandas`, `numpy`, `scipy`, and `scikit-learn`.
+Python 3.10 or newer with `pandas`, `numpy`, `scipy`, `scikit-learn`, and
+`nflreadpy`.
 
 ## Example
 
@@ -58,8 +59,10 @@ python3 Code/nfl_RAPM/football_rapm.py \
 ```
 
 The optional positions file has `player_id,position` columns and may include a `season`
-column for season-specific labels. Run `python3 Code/nfl_RAPM/football_rapm.py --selftest`
-to exercise yardage normalization and synthetic offense/defense sign recovery.
+column for season-specific labels. Pass `--no-nflreadpy-positions` to skip the roster
+database lookup when desired. Run
+`python3 Code/nfl_RAPM/football_rapm.py --selftest` to exercise yardage normalization,
+position fallback/precedence, and synthetic offense/defense sign recovery.
 
 ## Outputs and options
 
