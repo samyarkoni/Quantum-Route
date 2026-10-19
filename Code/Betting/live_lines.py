@@ -16,7 +16,8 @@ import sys
 import urllib.request
 from datetime import datetime, timezone
 
-GAMES_URL = "https://github.com/nflverse/nfldata/raw/master/data/games.csv"
+# raw.githubusercontent.com directly: the routines' sandbox allows it but not github.com/<repo>/raw/ URLs
+GAMES_URL = "https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv"
 LINE_COLUMNS = ["spread_line", "total_line", "home_moneyline", "away_moneyline", "home_spread_odds",
                 "away_spread_odds", "over_odds", "under_odds", "result", "total", "home_score", "away_score"]
 
