@@ -717,13 +717,33 @@ function renderChart(bets) {
 // ---------- render: tracker ----------
 const GAME_BY_ID = new Map(DATA.games.map(g => [g.game_id, g]));
 
+// ---------- live lines (shared, through the artifact's db) ----------
+// lines/current holds the newest season's latest lines, prices and scores (live_lines.py, written by
+// a scheduled claude.ai routine). They replace the ones the board was built with; line edits still win.
+const LIVE_KEYS = ["spread_line", "total_line", "home_moneyline", "away_moneyline", "home_spread_odds",
+  "away_spread_odds", "over_odds", "under_odds", "result", "total", "home_score", "away_score"];
+let linesSynced = null;
+function applyLiveLines(live) {
+  if (!live || typeof live.games !== "object" || !live.games) return;
+  for (const [id, row] of Object.entries(live.games)) {
+    const g = GAME_BY_ID.get(id);
+    if (!g || !row || typeof row !== "object") continue;
+    for (const k of LIVE_KEYS) if (k in row) g[k] = typeof row[k] === "number" && isFinite(row[k]) ? row[k] : null;
+  }
+  const t = new Date(live.updated);
+  linesSynced = isNaN(t) ? null : t;
+}
+const fmtSynced = t => t.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+
 async function renderTracker() {
   const count = document.getElementById("tracker-count");
   const empty = document.getElementById("tracker-empty");
   const rowsEl = document.getElementById("tracker-rows");
   const tiles = document.getElementById("tracker-tiles");
   const verdict = document.getElementById("tracker-verdict");
-  document.getElementById("tracker-note").textContent = `Results as of ${DATA.built} · rebuild the board to grade newer games`;
+  document.getElementById("tracker-note").textContent = linesSynced
+    ? `Results as of ${fmtSynced(linesSynced)}`
+    : `Results as of ${DATA.built} · rebuild the board to grade newer games`;
 
   if (!tracker.db) {
     count.textContent = "";
@@ -822,13 +842,16 @@ document.querySelectorAll(".tabs [data-view]").forEach(btn => btn.addEventListen
 function renderAll() { renderWeek(); renderRecord(); }
 
 const weekSel = document.getElementById("week");
-weekSel.innerHTML = weeks.map(k => {
-  const [s, w] = k.split("-").map(Number);
-  const gs = DATA.games.filter(g => weekKey(g) === k);
-  const tag = gs.some(g => !has(g.result)) ? " · upcoming" : "";
-  return `<option value="${k}">${s} week ${w}${tag}</option>`;
-}).join("");
-weekSel.value = state.week;
+function renderWeekOptions() {
+  weekSel.innerHTML = weeks.map(k => {
+    const [s, w] = k.split("-").map(Number);
+    const gs = DATA.games.filter(g => weekKey(g) === k);
+    const tag = gs.some(g => !has(g.result)) ? " · upcoming" : "";
+    return `<option value="${k}">${s} week ${w}${tag}</option>`;
+  }).join("");
+  weekSel.value = state.week;
+}
+renderWeekOptions();
 weekSel.addEventListener("change", () => { state.week = weekSel.value; store.set("week", state.week); renderWeek(); });
 
 document.querySelectorAll("[data-market]").forEach(box => {
@@ -881,8 +904,13 @@ document.getElementById("reset").addEventListener("click", () => {
 });
 
 const pt = DATA.plays_through;
-document.getElementById("meta").textContent =
-  `Plays through ${pt.season} wk ${pt.week} · built ${DATA.built} · calibrated slope ${Object.values(DATA.calibration).at(-1).slope.toFixed(2)}`;
+function renderMeta() {
+  document.getElementById("meta").textContent =
+    `Plays through ${pt.season} wk ${pt.week} · built ${DATA.built}` +
+    (linesSynced ? ` · lines ${fmtSynced(linesSynced)}` : "") +
+    ` · calibrated slope ${Object.values(DATA.calibration).at(-1).slope.toFixed(2)}`;
+}
+renderMeta();
 
 let resizeTimer;
 window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(renderRecord, 120); });
@@ -908,6 +936,13 @@ renderTracker();
     ? "Tick “Bet it” on a pick you actually placed. It's saved for everyone on this board, with the line and price as shown."
     : "You can see the bets we placed, but your access is view-only.";
   renderWeek();
+  db.doc("lines/current").onSnapshot(snap => {
+    if (!snap.exists) return;
+    applyLiveLines(snap.data());
+    renderWeekOptions(); renderMeta(); renderAll(); renderTracker();
+  }, () => {
+    showStatus("board-status", "Live lines stopped updating. Reload the page to get the latest odds.");
+  });
   db.collection("bets").onSnapshot(snap => {
     tracker.bets = new Map(snap.docs.map(d => [d.id, d.data()]));
     tracker.loaded = true;

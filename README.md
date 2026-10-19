@@ -64,6 +64,8 @@ On the page you can:
 - switch between the raw model margin and the calibrated one (calibrated multiplies the margin by the out-of-sample slope);
 - see how the current rule would have done on every graded game, with record, units, ROI and a cumulative chart.
 
+Odds update on their own. On game days a scheduled claude.ai routine runs `live_lines.py` every 30 minutes. That covers Thursday, Sunday and Monday nights plus Sunday afternoon, all in Eastern time. The script pulls the newest season's lines, prices and scores from nflverse. When anything has changed, the routine writes them to the published board's `lines/current` document. The page lays those over the lines it was built with, so new and moved lines, and final scores, show up without a rebuild. Lines you type in still take priority. Rebuild only for new predictions.
+
 The track record is the honest test. Over the 2024–2025 backtests, no setting clearly beats the vig.
 
 ## Research notes
@@ -122,6 +124,7 @@ cd Code/Team_Model && python coach_vs_player.py
 # Betting board: simulate a week (or a whole season), then build the page
 cd Code/Betting && python betting_board.py predict 2026 6
 cd Code/Betting && python betting_board.py build --refresh   # --refresh pulls new lines and results
+cd Code/Betting && python live_lines.py live.json            # current lines/results, as the board's lines/current document
 ```
 
 The first run of the team model builds `Data/Team_Model/plays_epa_full.parquet`, and later runs reuse it. Delete that file to rebuild it after changing the EP model.

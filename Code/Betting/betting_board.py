@@ -13,7 +13,9 @@ against the graded games.
 build also writes betting_board_page.html, the same page without its document wrapper, which is
 what gets published to the shared claude.ai board. There, the "Bet it" boxes and the "Bets we
 placed" tab save to the board's shared database (one bets/<game_id> document per bet); the local
-file shows the board without them.
+file shows the board without them. Lines and scores posted after a build reach the published page
+through its lines/current document (see live_lines.py), so the board needs rebuilding only for new
+predictions.
 """
 import json
 import sys
@@ -26,11 +28,10 @@ import pandas as pd
 CODE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(CODE_DIR / "Team_Model"))
 from data import GAMES_PATH, GAMES_URL, OUTPUT_DIR, load_epa_plays  # noqa: E402
+from live_lines import LINE_COLUMNS  # noqa: E402
 
 BOARD_DIR = OUTPUT_DIR.parent / "Betting"
 TEMPLATE = Path(__file__).resolve().parent / "board_template.html"
-LINE_COLUMNS = ["spread_line", "total_line", "home_moneyline", "away_moneyline", "home_spread_odds",
-                "away_spread_odds", "over_odds", "under_odds", "result", "total", "home_score", "away_score"]
 
 
 def load_schedule(refresh=False):
