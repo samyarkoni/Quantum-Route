@@ -119,6 +119,25 @@ def _derive_game_fields(frame: pd.DataFrame) -> None:
     frame["away_team_derived"] = parsed["away"]
 
 
+def _normalize_possession_team(frame: pd.DataFrame) -> None:
+    """Normalize the newer ``pos_team`` input name to the canonical ``posteam``."""
+    if "pos_team" not in frame:
+        return
+    pos_team = frame["pos_team"].astype("string").str.strip()
+    if "posteam" not in frame:
+        frame["posteam"] = pos_team
+        return
+    posteam = frame["posteam"].astype("string").str.strip()
+    both_present = posteam.notna() & posteam.ne("") & pos_team.notna() & pos_team.ne("")
+    conflicts = both_present & posteam.str.upper().ne(pos_team.str.upper())
+    if conflicts.any():
+        LOG.warning(
+            "%d row(s) have conflicting posteam and pos_team; keeping posteam where present",
+            int(conflicts.sum()),
+        )
+    frame["posteam"] = posteam.mask(posteam.isna() | posteam.eq(""), pos_team)
+
+
 def load_plays(input_value: str) -> tuple[pd.DataFrame, dict[str, str], dict[str, str], dict[str, str]]:
     """Load, coalesce duplicate team files, and collect player names and positions."""
     paths = _resolve_inputs(input_value)
@@ -132,6 +151,7 @@ def load_plays(input_value: str) -> tuple[pd.DataFrame, dict[str, str], dict[str
         chunk["_source_file"] = str(path)
         chunks.append(chunk)
     data = pd.concat(chunks, ignore_index=True, sort=False)
+    _normalize_possession_team(data)
     for key in ("game_id", "play_id"):
         data[key] = data[key].astype("string").str.strip()
     invalid_keys = data["game_id"].isna() | data["game_id"].eq("") | data["play_id"].isna() | data[
@@ -557,6 +577,24 @@ def _baseline_features(frame: pd.DataFrame, scheme_controls: bool) -> pd.DataFra
             features[column] = pd.to_numeric(frame[column], errors="coerce")
     if "score_diff" in frame and frame["score_diff"].notna().any():
         features["score_diff"] = pd.to_numeric(frame["score_diff"], errors="coerce")
+    if "spread_line" in frame:
+        spread = pd.to_numeric(frame["spread_line"], errors="coerce")
+        if {"posteam", "home_team_derived", "away_team_derived"}.issubset(frame.columns):
+            posteam = frame["posteam"].astype("string").str.strip().str.upper()
+            home = frame["home_team_derived"].astype("string").str.strip().str.upper()
+            away = frame["away_team_derived"].astype("string").str.strip().str.upper()
+            offense_spread = pd.Series(np.nan, index=frame.index, dtype=float)
+            at_home = posteam.eq(home)
+            at_away = posteam.eq(away)
+            offense_spread.loc[at_home] = spread.loc[at_home]
+            offense_spread.loc[at_away] = -spread.loc[at_away]
+            if offense_spread.notna().any():
+                features["offense_spread"] = offense_spread
+        else:
+            LOG.warning(
+                "Pre-game spread_line is present without possession/home/away teams; "
+                "omitting it as a model control"
+            )
     if scheme_controls:
         for column in ("defense_personnel", "n_defense", "defenders_in_box"):
             if column in frame:
@@ -1308,6 +1346,45 @@ def _run_selftest() -> None:
     expected = {10: 10, 15: 15, 23: 17, 55: 25, -18: -15.75, -40: -21.25}
     for value, result in expected.items():
         assert normalize_yards(value) == result, (value, normalize_yards(value), result)
+    possession_rows = pd.DataFrame(
+        {
+            "game_id": ["2025_01_HOM_AWY", "2025_01_HOM_AWY"],
+            "play_id": ["1", "2"],
+            "pos_team": ["HOM", "AWY"],
+            "spread_line": ["3.5", "3.5"],
+            "home_team_score": ["7", "7"],
+            "away_team_score": ["0", "0"],
+        }
+    )
+    _derive_game_fields(possession_rows)
+    _normalize_possession_team(possession_rows)
+    assert possession_rows["posteam"].tolist() == ["HOM", "AWY"]
+    assert _score_differential(possession_rows).tolist() == [7.0, -7.0]
+    spread_features = _baseline_features(possession_rows, scheme_controls=False)
+    assert spread_features["offense_spread"].tolist() == [3.5, -3.5]
+    rusher_frame = pd.DataFrame(
+        [
+            {
+                "season": "2025",
+                "play_type": "rush",
+                "offense_player_ids": "blocker",
+                "defense_player_ids": "defender",
+                "rusher_player_id": "runner",
+                "rusher_position": "RB",
+            }
+        ]
+    )
+    _, rusher_columns, _, _, rusher_metadata = _make_design(
+        rusher_frame,
+        False,
+        {"runner": "RB"},
+        {},
+        {"defender": "LB"},
+        {"runner": "Rusher Display Name"},
+    )
+    rusher_column = ("offense", "ball_carrier", "runner")
+    assert rusher_column in rusher_columns
+    assert rusher_metadata[rusher_column]["player_name"] == "Rusher Display Name"
     seed = 731
     rng = np.random.default_rng(seed)
     n_games, plays_per_game, n_teams = 60, 500, 24

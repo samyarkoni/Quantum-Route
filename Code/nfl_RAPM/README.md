@@ -12,8 +12,32 @@ Python 3.10 or newer with `pandas`, `numpy`, `scipy`, and `scikit-learn`.
 
 ## Example
 
-From the repository root, pass the team participation data directory (duplicate plays in
-team files are merged automatically):
+The loader accepts optional play fields in addition to the participation
+columns, including `spread_line`, `pos_team` (or `posteam`),
+`rusher_player_id`, `rusher_player_name`, `rusher_position`,
+`rushing_player_type`, `qtr`, `game_seconds_remaining`, and `yardline_100`.
+`pos_team` is normalized to the model's canonical `posteam` field and is used to
+orient pre-play score and spread relative to the offense. A conflicting nonblank
+`posteam` value takes precedence and is reported. `spread_line` follows the
+nflverse convention: positive values favor the home team. The model converts it
+to `offense_spread`, positive when the possession team is favored, and uses it as
+a pre-game context control; rows without a confidently identified possession
+side have a missing spread control. Rusher IDs create ball-carrier effects in
+rushing models, including when the rusher is absent from the listed offensive
+participants, and `rusher_player_name` supplies the display name when needed.
+When these optional fields are absent, their associated features are omitted.
+Player positions are looked up by
+GSIS ID from `nflreadpy.load_players()`; recognized defensive position labels,
+rusher positions, and explicit `--positions` entries take precedence over the
+database fallback. Blank or unrecognized labels (including `UNK`) do not replace
+a recognized database position. On the current 2025 team CSV player IDs, the
+database lookup covered all observed IDs. Position groups follow the player's
+roster position even if a participation row lists them on the opposite side;
+shrinkage/ranking groups still include side and role. K, P, and LS positions
+are shown as `SPEC` rather than `UNK`.
+
+From the repository root, pass the team participation data directory (duplicate
+plays in team files are merged automatically):
 
 ```sh
 python3 Code/nfl_RAPM/football_rapm.py \
