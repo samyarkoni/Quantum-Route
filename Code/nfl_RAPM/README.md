@@ -37,6 +37,19 @@ roster position even if a participation row lists them on the opposite side;
 shrinkage/ranking groups still include side and role. K, P, and LS positions
 are shown as `SPEC` rather than `UNK`.
 
+Within each fitted model, player variables with 200 or fewer observed plays
+are not individually estimated. Their coefficients are held at the
+play-weighted average for qualified players in the same side, participation
+role, and position group; only variables with more than 200 plays contribute to
+that average. This cutoff is applied separately to each model and role, so a
+ball-carrier variable's count is carries, while an on-field variable's count is
+snaps/plays. If a group has no qualified players, its frozen value is zero (the
+model's neutral player-effect reference). Result CSVs mark these rows as
+`position_average_frozen` in `estimate_status`; values above the cutoff are
+marked `individual_estimate`. The low-count variables remain in the joint
+design at their frozen value, so their plays still inform their teammates'
+and opponents' estimates.
+
 From the repository root, pass the team participation data directory (duplicate
 plays in team files are merged automatically):
 
@@ -68,8 +81,9 @@ position fallback/precedence, and synthetic offense/defense sign recovery.
 
 The output directory contains `rapm_rush.csv`, `rapm_pass.csv`,
 `rapm_all_plays.csv`, `rapm_qb.csv`, and `diagnostics.txt`. The full RAPM tables include
-all estimated player-side-role coefficients; QB and position leaderboards are reporting
-views of these same three fits. Common options include `--by-season`, `--cap`,
+all player-side-role variables, including position-average values frozen for low-count
+players; QB and position leaderboards are reporting views of these same three fits.
+Common options include `--by-season`, `--cap`,
 `--shrink`, `--folds`, `--lambda-grid`, `--max-passes`, `--tol`,
 `--no-group-priors`, `--scheme-controls`, `--min-plays`, `--min-carries`,
 `--bootstrap`, and `--seed`. Scheme controls, when requested, use only

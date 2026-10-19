@@ -21,6 +21,7 @@ from sklearn.model_selection import GroupKFold
 
 
 LOG = logging.getLogger("football_rapm")
+MIN_INDIVIDUAL_ESTIMATION_PLAYS = 200
 REQUIRED_COLUMNS = {
     "game_id",
     "play_id",
@@ -845,10 +846,13 @@ def _cross_validated_rmse(
             - train_baseline
             - np.asarray(design[train] @ prior).ravel()
         )
-        beta, intercept = _ridge_fit(design[train], centered_target, alpha)
+        train_counts = np.asarray((design[train] != 0).sum(axis=0)).ravel().astype(float)
+        coefficients, intercept = _fit_player_coefficients(
+            design[train], centered_target, alpha, prior, train_counts
+        )
         prediction = (
             test_baseline
-            + np.asarray(design[test] @ (prior + beta)).ravel()
+            + np.asarray(design[test] @ coefficients).ravel()
             + intercept
         )
         squared_error += float(np.square(target[test] - prediction).sum())
@@ -871,16 +875,59 @@ def _intercept_cv_rmse(target: np.ndarray, frame: pd.DataFrame, folds: int) -> f
     return math.sqrt(squared_error / observations) if observations else float("nan")
 
 
-def _group_means(coefficients: np.ndarray, counts: np.ndarray, group_keys: Sequence[tuple[str, str, str]]) -> np.ndarray:
+def _fit_player_coefficients(
+    design: sparse.csr_matrix,
+    centered_target: np.ndarray,
+    alpha: float,
+    prior: np.ndarray,
+    counts: np.ndarray,
+) -> tuple[np.ndarray, float]:
+    """Fit only well-sampled player deviations; keep other effects at their prior."""
+    individually_fit = counts > MIN_INDIVIDUAL_ESTIMATION_PLAYS
+    coefficients = prior.copy()
+    if not individually_fit.any():
+        return coefficients, float(np.mean(centered_target)) if len(centered_target) else 0.0
+    deviations, intercept = _ridge_fit(
+        design[:, individually_fit], centered_target, alpha
+    )
+    coefficients[individually_fit] += deviations
+    return coefficients, intercept
+
+
+def _group_means(
+    coefficients: np.ndarray,
+    counts: np.ndarray,
+    group_keys: Sequence[tuple[str, str, str]],
+    individually_fit: np.ndarray | None = None,
+) -> np.ndarray:
+    if individually_fit is None:
+        individually_fit = counts > MIN_INDIVIDUAL_ESTIMATION_PLAYS
     accum: defaultdict[tuple[str, str, str], list[float]] = defaultdict(lambda: [0.0, 0.0])
-    for beta, count, group in zip(coefficients, counts, group_keys):
+    for beta, count, group, include in zip(coefficients, counts, group_keys, individually_fit):
+        if not include:
+            continue
         accum[group][0] += float(beta) * float(count)
         accum[group][1] += float(count)
     means = {
         group: total / count if count else 0.0
         for group, (total, count) in accum.items()
     }
-    return np.asarray([means[group] for group in group_keys], dtype=float)
+    return np.asarray([means.get(group, 0.0) for group in group_keys], dtype=float)
+
+
+def _next_group_targets(
+    coefficients: np.ndarray,
+    counts: np.ndarray,
+    group_keys: Sequence[tuple[str, str, str]],
+    group_priors: bool,
+) -> np.ndarray:
+    individually_fit = counts > MIN_INDIVIDUAL_ESTIMATION_PLAYS
+    means = _group_means(coefficients, counts, group_keys, individually_fit)
+    if group_priors:
+        return means
+    targets = np.zeros_like(coefficients)
+    targets[~individually_fit] = means[~individually_fit]
+    return targets
 
 
 def fit_model(
@@ -942,12 +989,18 @@ def fit_model(
                 LOG.warning("%s: game-grouped CV unavailable; using lambda %.4g", name, alpha)
                 final_cv = float("nan")
         residual = y - baseline - np.asarray(design @ prior).ravel()
-        deviations, _ = _ridge_fit(design, residual, alpha)
-        coefficients = prior + deviations
-        if group_priors:
-            next_prior = _group_means(coefficients, counts, group_keys)
-        else:
-            next_prior = np.zeros_like(prior)
+        coefficients, _ = _fit_player_coefficients(
+            design, residual, alpha, prior, counts
+        )
+        individually_fit = counts > MIN_INDIVIDUAL_ESTIMATION_PLAYS
+        final_group_means = _group_means(
+            coefficients, counts, group_keys, individually_fit
+        )
+        coefficients[~individually_fit] = final_group_means[~individually_fit]
+        prior[~individually_fit] = final_group_means[~individually_fit]
+        next_prior = _next_group_targets(
+            coefficients, counts, group_keys, group_priors
+        )
         next_deviation = coefficients - next_prior
         largest_change = (
             float(np.max(np.abs(next_deviation - previous_deviation)))
@@ -973,8 +1026,15 @@ def fit_model(
     # The coefficients above used the previous baseline/prior; refit once against the
     # final out-of-fold baseline and the final group targets before reporting.
     residual = y - baseline - np.asarray(design @ prior).ravel()
-    deviations, _ = _ridge_fit(design, residual, alpha)
-    coefficients = prior + deviations
+    coefficients, _ = _fit_player_coefficients(
+        design, residual, alpha, prior, counts
+    )
+    individually_fit = counts > MIN_INDIVIDUAL_ESTIMATION_PLAYS
+    final_group_means = _group_means(
+        coefficients, counts, group_keys, individually_fit
+    )
+    coefficients[~individually_fit] = final_group_means[~individually_fit]
+    prior[~individually_fit] = final_group_means[~individually_fit]
     final_validation_baselines = _nested_cv_baselines(
         features,
         baseline_target,
@@ -1026,9 +1086,10 @@ def _bootstrap_fit(
         baseline = result.baseline[rows]
         prior = result.group_targets
         centered = target - baseline - np.asarray(matrix @ prior).ravel()
-        beta, _ = _ridge_fit(matrix, centered, result.lambda_value)
-        full = prior + beta
         sampled_counts = np.asarray((matrix != 0).sum(axis=0)).ravel().astype(float)
+        full, _ = _fit_player_coefficients(
+            matrix, centered, result.lambda_value, prior, sampled_counts
+        )
         means = _group_means(full, sampled_counts, result.group_keys)
         for index, estimate in enumerate(full - means):
             estimates[index].append(float(estimate))
@@ -1061,6 +1122,11 @@ def _format_outputs(
                 "role": role,
                 "season": player["season"],
                 "n_plays": int(result.counts[index]),
+                "estimate_status": (
+                    "position_average_frozen"
+                    if result.counts[index] <= MIN_INDIVIDUAL_ESTIMATION_PLAYS
+                    else "individual_estimate"
+                ),
                 "rapm": float(result.coefficients[index]),
                 "rapm_per_100": float(result.coefficients[index] * 100),
                 "rapm_vs_group_avg": deviation,
@@ -1210,9 +1276,10 @@ def _split_half_reliability(
         matrix = result.design[rows]
         y = result.frame["yards"].to_numpy(dtype=float)[rows]
         centered = y - result.baseline[rows] - np.asarray(matrix @ result.group_targets).ravel()
-        beta, _ = _ridge_fit(matrix, centered, result.lambda_value)
-        coefficients = result.group_targets + beta
         counts = np.asarray((matrix != 0).sum(axis=0)).ravel().astype(float)
+        coefficients, _ = _fit_player_coefficients(
+            matrix, centered, result.lambda_value, result.group_targets, counts
+        )
         means = _group_means(coefficients, counts, result.group_keys)
         deviations.append(coefficients - means)
         counts_by_half.append(counts)
@@ -1254,6 +1321,8 @@ def _write_diagnostics(
                 f"Plays: {len(result.frame):,}",
                 f"Distinct player IDs: {len({column[2] for column in result.columns}):,}",
                 f"Players/columns: {len(result.columns):,}",
+                "Position-average frozen variables (<= 200 plays): "
+                f"{int(np.count_nonzero(result.counts <= MIN_INDIVIDUAL_ESTIMATION_PLAYS)):,}",
                 f"Chosen lambda: {result.lambda_value:g}",
                 f"CV RMSE (intercept-only): {result.intercept_rmse:.6f}",
                 f"CV RMSE (baseline-only): {result.baseline_rmse:.6f}",
@@ -1263,9 +1332,12 @@ def _write_diagnostics(
             ]
         )
         group_stats: defaultdict[tuple[str, str, str], list[float]] = defaultdict(list)
-        for coefficient, group in zip(result.coefficients, result.group_keys):
-            group_stats[group].append(float(coefficient))
-        lines.append("Coefficient mean and SD by group:")
+        for coefficient, count, group in zip(
+            result.coefficients, result.counts, result.group_keys
+        ):
+            if count > MIN_INDIVIDUAL_ESTIMATION_PLAYS:
+                group_stats[group].append(float(coefficient))
+        lines.append("Individually estimated coefficient mean and SD by group:")
         for group, values in sorted(group_stats.items()):
             lines.append(
                 f"  {group}: mean={np.mean(values):.6f}, sd={np.std(values):.6f}, n={len(values)}"
@@ -1371,6 +1443,7 @@ def run_analysis(args: argparse.Namespace) -> None:
         columns.extend(
             [
                 "n_plays",
+                "estimate_status",
                 "rapm",
                 "rapm_per_100",
                 "rapm_vs_group_avg",
@@ -1439,6 +1512,47 @@ def _run_selftest() -> None:
     assert _position_group("RB") == "RB"
     assert _position_group("K") == "SPEC"
     assert _position_group("UNK") == "UNK"
+    low_sample_design = sparse.csr_matrix(
+        np.column_stack(
+            (
+                np.ones(201),
+                np.r_[np.ones(200), 0.0],
+            )
+        )
+    )
+    low_sample_counts = np.asarray((low_sample_design != 0).sum(axis=0)).ravel()
+    assert low_sample_counts.tolist() == [201.0, 200.0]
+    fitted, _ = _fit_player_coefficients(
+        low_sample_design,
+        np.r_[np.full(200, 8.0), 3.0],
+        1.0,
+        np.zeros(2),
+        low_sample_counts,
+    )
+    next_targets = _next_group_targets(
+        fitted,
+        low_sample_counts,
+        [("offense", "on_field", "WR"), ("offense", "on_field", "WR")],
+        group_priors=True,
+    )
+    assert fitted[1] == 0.0
+    assert next_targets[1] == fitted[0]
+    unpooled_targets = _next_group_targets(
+        fitted,
+        low_sample_counts,
+        [("offense", "on_field", "WR"), ("offense", "on_field", "WR")],
+        group_priors=False,
+    )
+    assert unpooled_targets[0] == 0.0
+    assert unpooled_targets[1] == fitted[0]
+    frozen, _ = _fit_player_coefficients(
+        low_sample_design,
+        np.r_[np.full(200, 8.0), 3.0],
+        1.0,
+        next_targets,
+        low_sample_counts,
+    )
+    assert frozen[1] == next_targets[1]
     possession_rows = pd.DataFrame(
         {
             "game_id": ["2025_01_HOM_AWY", "2025_01_HOM_AWY"],
