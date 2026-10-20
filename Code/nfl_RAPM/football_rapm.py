@@ -1180,6 +1180,37 @@ def _format_outputs(
     return output
 
 
+def _add_play_type_components(
+    all_plays: pd.DataFrame,
+    rush: pd.DataFrame,
+    passing: pd.DataFrame,
+    by_season: bool,
+) -> pd.DataFrame:
+    """Attach separate rush/pass estimates to each pooled player row."""
+    keys = ["player_id", "side", "role"]
+    if by_season:
+        keys.append("season")
+    output = all_plays.copy()
+    for key in keys:
+        if key not in output:
+            output[key] = pd.Series(dtype="string")
+    for play_type, component in (("rush", rush), ("pass", passing)):
+        component_columns = keys + ["rapm", "rapm_per_100", "n_plays"]
+        if component.empty:
+            selected = pd.DataFrame(columns=component_columns)
+        else:
+            selected = component[component_columns]
+        renamed = selected.rename(
+            columns={
+                "rapm": f"{play_type}_rapm",
+                "rapm_per_100": f"{play_type}_rapm_per_100",
+                "n_plays": f"{play_type}_n_plays",
+            }
+        )
+        output = output.merge(renamed, on=keys, how="left", validate="one_to_one")
+    return output
+
+
 def _make_qb_view(
     pass_result: FitResult,
     rush_result: FitResult,
@@ -1428,6 +1459,13 @@ def run_analysis(args: argparse.Namespace) -> None:
     outputs: dict[str, pd.DataFrame] = {}
     for name, result in result_by_name.items():
         output = _format_outputs(result, metadata)
+        if name == "rapm_all_plays":
+            output = _add_play_type_components(
+                output,
+                _format_outputs(result_by_name["rapm_rush"], metadata),
+                _format_outputs(result_by_name["rapm_pass"], metadata),
+                args.by_season,
+            )
         if args.by_season and "season" not in output:
             output["season"] = pd.Series(dtype=str)
         columns = [
@@ -1450,6 +1488,17 @@ def run_analysis(args: argparse.Namespace) -> None:
                 "rank_in_group",
             ]
         )
+        if name == "rapm_all_plays":
+            columns.extend(
+                [
+                    "rush_rapm",
+                    "rush_rapm_per_100",
+                    "rush_n_plays",
+                    "pass_rapm",
+                    "pass_rapm_per_100",
+                    "pass_n_plays",
+                ]
+            )
         if args.bootstrap > 0:
             columns.extend(["p10", "p90"])
         for column in columns:
@@ -1512,6 +1561,60 @@ def _run_selftest() -> None:
     assert _position_group("RB") == "RB"
     assert _position_group("K") == "SPEC"
     assert _position_group("UNK") == "UNK"
+    pooled = pd.DataFrame(
+        [
+            {"player_id": "p1", "side": "offense", "role": "on_field"},
+            {"player_id": "p2", "side": "defense", "role": "on_field"},
+        ]
+    )
+    rush = pd.DataFrame(
+        [
+            {
+                "player_id": "p1",
+                "side": "offense",
+                "role": "on_field",
+                "season": "",
+                "rapm": 0.2,
+                "rapm_per_100": 20.0,
+                "n_plays": 12,
+            }
+        ]
+    )
+    passing = pd.DataFrame(
+        [
+            {
+                "player_id": "p1",
+                "side": "offense",
+                "role": "on_field",
+                "season": "",
+                "rapm": 0.3,
+                "rapm_per_100": 30.0,
+                "n_plays": 34,
+            }
+        ]
+    )
+    components = _add_play_type_components(pooled, rush, passing, by_season=False)
+    assert components.loc[0, "rush_rapm"] == 0.2
+    assert components.loc[0, "pass_rapm"] == 0.3
+    assert pd.isna(components.loc[1, "rush_rapm"])
+    assert components.loc[1, "side"] == "defense"
+    seasonal_pooled = pd.concat(
+        [pooled.iloc[[0]].assign(season="2023"), pooled.iloc[[0]].assign(season="2024")],
+        ignore_index=True,
+    )
+    seasonal_rush = pd.concat(
+        [
+            rush.assign(season="2023"),
+            rush.assign(season="2024", rapm=0.4, rapm_per_100=40.0),
+        ],
+        ignore_index=True,
+    )
+    seasonal_components = _add_play_type_components(
+        seasonal_pooled, seasonal_rush, passing.assign(season="2024"), by_season=True
+    )
+    assert seasonal_components["rush_rapm"].tolist() == [0.2, 0.4]
+    assert pd.isna(seasonal_components.loc[0, "pass_rapm"])
+    assert seasonal_components.loc[1, "pass_rapm"] == 0.3
     low_sample_design = sparse.csr_matrix(
         np.column_stack(
             (

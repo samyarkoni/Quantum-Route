@@ -82,8 +82,12 @@ position fallback/precedence, and synthetic offense/defense sign recovery.
 The output directory contains `rapm_rush.csv`, `rapm_pass.csv`,
 `rapm_all_plays.csv`, `rapm_qb.csv`, and `diagnostics.txt`. The full RAPM tables include
 all player-side-role variables, including position-average values frozen for low-count
-players; QB and position leaderboards are reporting views of these same three fits.
-Common options include `--by-season`, `--cap`,
+players. The pooled `rapm_all_plays.csv` also includes the separately fitted
+`rush_rapm` and `pass_rapm` values, their per-100-play equivalents, and corresponding
+play counts for each matching player ID, side, role, and (when enabled) season. A blank
+component means that player-side-role had no observations in that play-type fit; these
+separate-model values are not added together. QB and position leaderboards are reporting
+views of the three fits. Common options include `--by-season`, `--cap`,
 `--shrink`, `--folds`, `--lambda-grid`, `--max-passes`, `--tol`,
 `--no-group-priors`, `--scheme-controls`, `--min-plays`, `--min-carries`,
 `--bootstrap`, and `--seed`. Scheme controls, when requested, use only
