@@ -68,6 +68,15 @@ Odds update on their own. On game days two scheduled claude.ai routines run `liv
 
 The track record is the honest test. Over the 2024–2025 backtests, no setting clearly beats the vig.
 
+### 6. Your trades: skill or luck? `Code/Trades/`
+`trades.py` imports Robinhood realized P&L exports (Kalshi and ForecastEx event contracts) into `Data/quantum_route.duckdb` and asks whether the profit beats the prices paid. The export has no quantities, so contracts come from the $0.01-per-contract commission, and the entry price is cost divided by contracts.
+
+- **Price-implied null test.** Each position becomes a zero-edge bet at its own entry price: the contract pays with probability equal to that price, with the same size and fees. Contracts on the same game share one random draw, so a team's moneyline and spread win together. The p-value is how often simulated zero-edge histories match the real profit.
+- **Breakdowns.** Each one is tested on its own simulation: entry-price bands (calibration), season, market type, and the gap between Quantum Route's pregame probability and the price paid, for games in `Data/Team_Model` backtests or predictions.
+- **Concentration.** How much profit is left after dropping the biggest wins, compared with zero-edge histories that drop their own.
+
+The export has no fill times, so pregame and in-game buys can't be split yet. `Code/Dashboard/trades_app.py` is the Streamlit page for all of this, and it takes uploads too.
+
 ## Research notes
 
 [`writeups/coaching_vs_player_effects.txt`](writeups/coaching_vs_player_effects.txt) covers 2018–2025 (4,254 team-games):
@@ -93,6 +102,7 @@ pip install numpy pandas pyarrow
 ```
 
 - `pyarrow` is needed for the parquet caches in `Data/`.
+- The trades analysis also needs `duckdb`, and its dashboard needs `streamlit` and `altair`.
 - To re-export game data from nflverse, also install `nflreadpy` and `polars`.
 - The team models download the nflverse schedule (`games.csv`, which has scores, closing lines, coaches and starting QBs) the first time they run.
 
@@ -117,6 +127,11 @@ cd Code/Team_Model && python run_team_model.py 2025
 # Walk-forward backtest for a season, then score all saved seasons against the market
 cd Code/Team_Model && python run_backtest.py 2025
 cd Code/Team_Model && python run_backtest.py report
+
+# Your trades: import a Robinhood realized P&L export, then the skill-vs-luck report or dashboard
+python Code/Trades/trades.py import realized_pnl.csv
+python Code/Trades/trades.py report
+streamlit run Code/Dashboard/trades_app.py
 
 # Coach vs. QB vs. roster decomposition
 cd Code/Team_Model && python coach_vs_player.py
