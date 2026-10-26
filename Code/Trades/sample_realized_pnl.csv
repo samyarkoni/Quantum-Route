@@ -1,0 +1,65 @@
+Account Number,Close Date,Symbol,Event Identifier,Exchange,Costs,Proceeds,Gross Pnl,Exchange Fees,Commissions,Net Pnl
+RH0000000000,2025-03-21,KXMARMAD-25R64G5-MISS,Will Ole Miss reach the Rnd of 32 in the Men's College Basketball Tournament?,Kalshi,-6.40,0.00,-6.40,-0.20,-0.20,-6.80
+RH0000000000,2025-03-21,KXMARMAD-25R64G7-MARQ,Will Marquette reach the Rnd of 32 in the Men's College Basketball Tournament?,Kalshi,-8.50,0.00,-8.50,-0.20,-0.20,-8.90
+RH0000000000,2025-03-22,KXMARMAD-25R64G29-XAV,Will Xavier reach the Rnd of 32 in the Men's College Basketball Tournament?,Kalshi,-3.70,0.00,-3.70,-0.10,-0.10,-3.90
+RH0000000000,2025-03-22,KXMARMAD-25R32G13-HOU,Will Houston reach the Rnd of 16 in the Men's College Basketball Tournament?,Kalshi,-13.60,20.00,6.40,-0.20,-0.20,6.00
+RH0000000000,2025-03-22,KXMARMAD-25R32G11-WIS,Will Wisconsin reach the Rnd of 16 in the Men's College Basketball Tournament?,Kalshi,-15.37,3.19,-12.18,-0.58,-0.58,-13.34
+RH0000000000,2025-03-23,KXMARMAD-25R32G6-MD,Will Maryland reach the Rnd of 16 in the Men's College Basketball Tournament?,Kalshi,-12.60,20.00,7.40,-0.20,-0.20,7.00
+RH0000000000,2025-03-23,KXMARMAD-25R32G12-ALA,Will Alabama reach the Rnd of 16 in the Men's College Basketball Tournament?,Kalshi,-13.80,20.00,6.20,-0.20,-0.20,5.80
+RH0000000000,2025-03-27,KXMARMAD-25R16G6-ALA,Will Alabama reach the Rnd of 8 in the Men's College Basketball Tournament?,Kalshi,-13.00,20.00,7.00,-0.20,-0.20,6.60
+RH0000000000,2025-03-28,KXMARMAD-25R16G2-MSU,Will Michigan St reach the Rnd of 8 in the Men's College Basketball Tournament?,Kalshi,-12.80,20.00,7.20,-0.20,-0.20,6.80
+RH0000000000,2025-04-06,KXMARMAD-25-DU,Will Duke win the Men's college Basketball Final?,Kalshi,-8.00,0.00,-8.00,-0.32,-0.32,-8.64
+RH0000000000,2025-09-08,KXNFLGAME-25SEP08MINCHI-MIN,Minnesota vs Chicago Winner?,Kalshi,-0.54,1.00,0.46,-0.01,-0.01,0.44
+RH0000000000,2025-10-09,KXNFLGAME-25OCT09PHINYG-NYG,Will New York G win the Philadelphia at New York G?,Kalshi,-43.20,60.00,16.80,-0.60,-0.60,15.60
+RH0000000000,2025-10-16,KXNFLGAME-25OCT16PITCIN-PIT,Will Pittsburgh win the Pittsburgh at Cincinnati?,Kalshi,-22.77,0.00,-22.77,-0.33,-0.33,-23.43
+RH0000000000,2025-11-23,KXNFLGAME-25NOV23PITCHI-PIT,Will Pittsburgh win the Pittsburgh at Chicago?,Kalshi,-8.60,0.00,-8.60,-0.20,-0.20,-9.00
+RH0000000000,2025-11-23,KXNFLGAME-25NOV23INDKC-IND,Will Indianapolis win the Indianapolis at Kansas City?,Kalshi,-7.80,0.00,-7.80,-0.20,-0.20,-8.20
+RH0000000000,2025-11-23,KXNFLGAME-25NOV23JACARI-JAC,Will Jacksonville win the Jacksonville at Arizona?,Kalshi,-12.60,20.00,7.40,-0.20,-0.20,7.00
+RH0000000000,2025-11-23,KXNFLGAME-25NOV23PHIDAL-PHI,Will Philadelphia win the Philadelphia at Dallas?,Kalshi,-1.74,0.00,-1.74,-0.06,-0.06,-1.86
+RH0000000000,2025-11-23,KXNFLSPREAD-25NOV23PITCHI-CHI7,Will Chicago win by over 7.5 points,Kalshi,-13.10,16.40,3.30,-0.30,-0.30,2.70
+RH0000000000,2025-11-26,KXNBAGAME-25NOV26MILMIA-MIA,Milwaukee vs Miami Winner?,Kalshi,-7.50,10.00,2.50,-0.10,-0.10,2.30
+RH0000000000,2025-11-27,KXNFLSPREAD-25NOV27GBDET-GB6,Green Bay wins by over 6.5 points,Kalshi,-8.30,20.00,11.70,-0.20,-0.20,11.30
+RH0000000000,2025-11-27,KXNFLGAME-25NOV27CINBAL-CIN,Will Cincinnati win the Cincinnati at Baltimore?,Kalshi,-5.60,20.00,14.40,-0.20,-0.20,14.00
+RH0000000000,2025-11-27,KXNFLSPREAD-25NOV27GBDET-GB7,Green Bay wins by over 7.5 points,Kalshi,-6.20,8.20,2.00,-0.40,-0.40,1.20
+RH0000000000,2025-11-27,KXNFLGAME-25NOV27KCDAL-DAL,Will Dallas win the Kansas City at Dallas?,Kalshi,-3.80,10.00,6.20,-0.10,-0.10,6.00
+RH0000000000,2025-11-28,KXNFLGAME-25NOV28CHIPHI-CHI,Will Chicago win the Chicago at Philadelphia?,Kalshi,-8.90,30.00,21.10,-0.30,-0.30,20.50
+RH0000000000,2025-11-28,KXNFLSPREAD-25NOV28CHIPHI-CHI7,Chicago wins by over 7.5 points,Kalshi,-8.10,10.00,1.90,-0.10,-0.10,1.70
+RH0000000000,2025-11-28,KXNFLSPREAD-25NOV27CINBAL-CIN6,Cincinnati wins by over 6.5 points,Kalshi,-6.30,10.00,3.70,-0.10,-0.10,3.50
+RH0000000000,2025-11-29,KXNCAAFGAME-25NOV29OSUMICH-MICH,Will Michigan win the Ohio St. at Michigan?,Kalshi,-2.60,0.00,-2.60,-0.10,-0.10,-2.80
+RH0000000000,2025-11-29,KXNCAAFSPREAD-25NOV29PSURUTG-PSU20,Penn St. wins by over 20.5 points,Kalshi,-11.00,20.00,9.00,-0.20,-0.20,8.60
+RH0000000000,2025-11-29,KXNCAAFGAME-25NOV29PSURUTG-RUTG,Will Rutgers win the Penn St. at Rutgers?,Kalshi,-0.80,0.00,-0.80,-0.10,-0.10,-1.00
+RH0000000000,2025-11-30,KXNFLGAME-25NOV30BUFPIT-PIT,Will Pittsburgh win the Buffalo at Pittsburgh?,Kalshi,-7.60,0.00,-7.60,-0.20,-0.20,-8.00
+RH0000000000,2025-11-30,KXNFLGAME-25NOV30SFCLE-SF,Will San Francisco win the San Francisco at Cleveland?,Kalshi,-6.00,10.00,4.00,-0.10,-0.10,3.80
+RH0000000000,2025-11-30,NFLGW_113025HOUIND_IND,"Will Indianapolis defeat Houston on Nov 30, 2025?",ForecastEx,-3.70,0.60,-3.10,0.00,-0.20,-3.30
+RH0000000000,2025-11-30,KXNFLSPREAD-25NOV30BUFPIT-PIT2,Pittsburgh wins by over 2.5 points,Kalshi,-4.20,0.00,-4.20,-0.10,-0.10,-4.40
+RH0000000000,2025-12-07,KXNFLGAME-25DEC07CINBUF-BUF,Will Buffalo win the Cincinnati at Buffalo?,Kalshi,-5.00,10.00,5.00,-0.10,-0.10,4.80
+RH0000000000,2025-12-07,KXNFLGAME-25DEC07HOUKC-HOU,Will Houston win the Houston at Kansas City?,Kalshi,-6.60,20.00,13.40,-0.20,-0.20,13.00
+RH0000000000,2025-12-07,KXNFLSPREAD-25DEC07PITBAL-PIT2,Pittsburgh wins by over 2.5 points,Kalshi,-5.70,10.00,4.30,-0.10,-0.10,4.10
+RH0000000000,2025-12-07,KXNFLGAME-25DEC07PITBAL-PIT,Will Pittsburgh win the Pittsburgh at Baltimore?,Kalshi,-12.50,30.00,17.50,-0.30,-0.30,16.90
+RH0000000000,2025-12-08,KXNFLSPREAD-25DEC07HOUKC-HOU2,Houston wins by over 2.5 points,Kalshi,-4.80,10.00,5.20,-0.10,-0.10,5.00
+RH0000000000,2025-12-08,KXNFLTOTAL-25DEC08PHILAC-41,Will there be Over 41.5 points scored in the PHI at LAC (Dec 8) professional football game?,Kalshi,-4.70,5.10,0.40,-0.20,-0.20,0.00
+RH0000000000,2025-12-09,KXNFLGAME-25DEC08PHILAC-PHI,Will Philadelphia win the Philadelphia at Los Angeles C?,Kalshi,-22.00,0.00,-22.00,-0.60,-0.60,-23.20
+RH0000000000,2025-12-12,KXNFLGAME-25DEC11ATLTB-ATL,Will Atlanta win the Atlanta at Tampa Bay?,Kalshi,-13.10,21.90,8.80,-0.50,-0.50,7.80
+RH0000000000,2025-12-14,KXNFLPREPACKSGP-25DEC14CARNO-CARO39,"Carolina wins against New Orleans, Carolina and New Orleans collectively score over 39.5 points",Kalshi,-3.40,0.00,-3.40,-0.10,-0.10,-3.60
+RH0000000000,2025-12-14,NFLGW_121425LACKC_LAC,"Will Los Angeles C defeat Kansas City on Dec 14, 2025?",ForecastEx,-18.22,48.00,29.78,0.00,-0.48,29.30
+RH0000000000,2025-12-14,KXNFLSPREAD-25DEC14CARNO-CAR6,Carolina wins by over 6.5 points,Kalshi,-7.40,0.00,-7.40,-0.20,-0.20,-7.80
+RH0000000000,2025-12-14,NFLGW_121425BALCIN_BAL,"Will Baltimore defeat Cincinnati on Dec 14, 2025?",ForecastEx,-2.30,3.35,1.05,0.00,-0.10,0.95
+RH0000000000,2025-12-14,KXNFLGAME-25DEC14CARNO-CAR,Will Carolina win the Carolina at New Orleans?,Kalshi,-5.90,0.00,-5.90,-0.10,-0.10,-6.10
+RH0000000000,2025-12-14,KXNFLSPREAD-25DEC14LACKC-KC7,Kansas City wins by over 7.5 points,Kalshi,-5.10,10.00,4.90,-0.10,-0.10,4.70
+RH0000000000,2025-12-19,KXNFLGAME-25DEC18LASEA-LA,Will Los Angeles R win the Los Angeles R at Seattle?,Kalshi,-11.71,0.00,-11.71,-0.20,-0.20,-12.11
+RH0000000000,2025-12-20,KXNFLGAME-25DEC20GBCHI-CHI,Will Chicago win the Green Bay at Chicago?,Kalshi,-17.54,38.00,20.46,-0.38,-0.38,19.70
+RH0000000000,2025-12-20,KXNFLGAME-25DEC20GBCHI-GB,Will Green Bay win the Green Bay at Chicago?,Kalshi,-4.60,5.60,1.00,-0.20,-0.20,0.60
+RH0000000000,2025-12-20,KXNFLANYTD-25DEC20PHIWAS-PHIABROWN11,Will A.J. Brown score a touchdown in the Philadelphia at Washington pro football game scheduled for December 20?,Kalshi,-3.50,0.00,-3.50,-0.10,-0.10,-3.70
+RH0000000000,2025-12-20,KXNFLGAME-25DEC20PHIWAS-PHI,Will Philadelphia win the Philadelphia at Washington?,Kalshi,-6.70,8.00,1.30,-0.20,-0.20,0.90
+RH0000000000,2025-12-21,KXNFLGAME-25DEC21NEBAL-NE,Will New England win the New England at Baltimore?,Kalshi,-19.90,50.00,30.10,-0.50,-0.50,29.10
+RH0000000000,2025-12-21,KXNFLGAME-25DEC21PITDET-PIT,Will Pittsburgh win the Pittsburgh at Detroit?,Kalshi,-13.50,50.00,36.50,-0.50,-0.50,35.50
+RH0000000000,2025-12-22,KXNFLWINS-PIT-25B-T8,Will the Pittsburgh pro football team have Over 8.5 wins in the 2025-26 season?,Kalshi,-46.16,100.00,53.84,-1.00,-1.00,51.84
+RH0000000000,2025-12-23,NFLGW_122225SFIND_IND,"Will Indianapolis defeat San Francisco on Dec 22, 2025?",ForecastEx,-19.50,0.00,-19.50,0.00,-0.70,-20.20
+RH0000000000,2025-12-25,KXNBAGAME-25DEC25SASOKC-SAS,San Antonio vs Oklahoma City Winner?,Kalshi,-2.65,5.00,2.35,-0.05,-0.05,2.25
+RH0000000000,2025-12-28,KXNFLANYTD-25DEC28PITCLE-PITJWARREN30,Will Jaylen Warren score a touchdown in the Pittsburgh at Cleveland pro football game scheduled for December 28?,Kalshi,-0.93,0.00,-0.93,-0.03,-0.03,-0.99
+RH0000000000,2025-12-28,KXNFLSPREAD-25DEC28PITCLE-PIT6,Pittsburgh wins by over 6.5 points,Kalshi,-7.80,0.00,-7.80,-0.20,-0.20,-8.20
+RH0000000000,2025-12-28,KXNFLANYTD-25DEC28PITCLE-PITDWASHINGTON80,Will Darnell Washington score a touchdown in the Pittsburgh at Cleveland pro football game scheduled for December 28?,Kalshi,-0.16,0.00,-0.16,-0.01,-0.01,-0.18
+RH0000000000,2025-12-28,KXNFLSPREAD-25DEC28PITCLE-PIT3,Pittsburgh wins by over 3.5 points,Kalshi,-9.40,0.00,-9.40,-0.20,-0.20,-9.80
+RH0000000000,2025-12-28,NFLGW_122825PITCLE_PIT,"Will Pittsburgh defeat Cleveland on Dec 28, 2025?",ForecastEx,-3.25,0.00,-3.25,0.00,-0.05,-3.30
+RH0000000000,2025-12-29,KXNFLGAME-25DEC29LAATL-LA,Will Los Angeles R win the Los Angeles R at Atlanta?,Kalshi,-23.79,0.00,-23.79,-0.53,-0.53,-24.85
+RH0000000000,2025-12-29,KXNFLSPREAD-25DEC29LAATL-LA2,Los Angeles R wins by over 2.5 points,Kalshi,-4.62,0.00,-4.62,-0.14,-0.14,-4.90
