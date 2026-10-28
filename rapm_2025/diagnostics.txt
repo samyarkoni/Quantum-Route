@@ -1,0 +1,101 @@
+Football RAPM diagnostics
+Rows after de-duplication: 48,771
+Games: 285
+Seasons: 2025
+Drop counts: non_run_pass_or_missing_type=14,845, missing_or_nonfinite_yards=0, missing_player_lists=0
+Starting/ending yardage absolute-distance mismatch rate (1-yard tolerance): 0.0000%
+
+[rapm_rush]
+Plays: 14,785
+Distinct player IDs: 1,971
+Players/columns: 2,343
+Position-average frozen variables (<= 200 plays): 1,635
+Chosen lambda: 1000
+CV RMSE (intercept-only): 4.599786
+CV RMSE (baseline-only): 4.492703
+CV RMSE (full model): 4.469180
+Passes: 6
+Largest within-group deviation change: 0.00774402
+Individually estimated coefficient mean and SD by group:
+  ('defense', 'on_field', 'DB'): mean=-0.101283, sd=0.050266, n=157
+  ('defense', 'on_field', 'DL'): mean=0.194897, sd=0.050503, n=109
+  ('defense', 'on_field', 'LB'): mean=0.062467, sd=0.050053, n=105
+  ('offense', 'ball_carrier', 'RB'): mean=-0.123171, sd=0.052552, n=23
+  ('offense', 'on_field', 'OL'): mean=0.050190, sd=0.047438, n=169
+  ('offense', 'on_field', 'QB'): mean=-0.324123, sd=0.055556, n=28
+  ('offense', 'on_field', 'RB'): mean=-0.143941, sd=0.023654, n=2
+  ('offense', 'on_field', 'TE'): mean=0.084521, sd=0.044098, n=50
+  ('offense', 'on_field', 'WR'): mean=0.203518, sd=0.041677, n=65
+Split-half reliability:
+  ('defense', 'on_field', 'DB'): 0.196547
+  ('defense', 'on_field', 'DL'): 0.030235
+  ('defense', 'on_field', 'LB'): 0.198764
+  ('offense', 'ball_carrier', 'RB'): 0.002689
+  ('offense', 'on_field', 'OL'): 0.240438
+  ('offense', 'on_field', 'QB'): -0.084980
+  ('offense', 'on_field', 'TE'): -0.029566
+  ('offense', 'on_field', 'WR'): 0.028205
+
+[rapm_pass]
+Plays: 19,141
+Distinct player IDs: 1,936
+Players/columns: 1,983
+Position-average frozen variables (<= 200 plays): 1,105
+Chosen lambda: 1000
+CV RMSE (intercept-only): 7.047448
+CV RMSE (baseline-only): 6.935025
+CV RMSE (full model): 6.926358
+Passes: 6
+Largest within-group deviation change: 0.01336724
+Individually estimated coefficient mean and SD by group:
+  ('defense', 'on_field', 'DB'): mean=0.030783, sd=0.074942, n=189
+  ('defense', 'on_field', 'DL'): mean=0.054471, sd=0.078130, n=130
+  ('defense', 'on_field', 'LB'): mean=0.056340, sd=0.071742, n=128
+  ('offense', 'on_field', 'DB'): mean=-0.541534, sd=0.000000, n=1
+  ('offense', 'on_field', 'OL'): mean=0.047711, sd=0.069471, n=185
+  ('offense', 'on_field', 'QB'): mean=0.214864, sd=0.054265, n=37
+  ('offense', 'on_field', 'RB'): mean=0.007389, sd=0.072324, n=44
+  ('offense', 'on_field', 'TE'): mean=0.101607, sd=0.086532, n=54
+  ('offense', 'on_field', 'WR'): mean=0.002706, sd=0.076562, n=110
+Split-half reliability:
+  ('defense', 'on_field', 'DB'): 0.149851
+  ('defense', 'on_field', 'DL'): 0.070918
+  ('defense', 'on_field', 'LB'): -0.028937
+  ('offense', 'on_field', 'OL'): 0.508627
+  ('offense', 'on_field', 'QB'): 0.420194
+  ('offense', 'on_field', 'RB'): 0.230962
+  ('offense', 'on_field', 'TE'): 0.244898
+  ('offense', 'on_field', 'WR'): 0.435739
+
+[rapm_all_plays]
+Plays: 33,926
+Distinct player IDs: 1,998
+Players/columns: 2,411
+Position-average frozen variables (<= 200 plays): 1,256
+Chosen lambda: 1000
+CV RMSE (intercept-only): 6.101960
+CV RMSE (baseline-only): 5.993012
+CV RMSE (full model): 5.976758
+Passes: 6
+Largest within-group deviation change: 0.01215195
+Individually estimated coefficient mean and SD by group:
+  ('defense', 'on_field', 'DB'): mean=-0.038451, sd=0.074028, n=231
+  ('defense', 'on_field', 'DL'): mean=0.070392, sd=0.069488, n=192
+  ('defense', 'on_field', 'LB'): mean=0.063315, sd=0.069879, n=161
+  ('offense', 'ball_carrier', 'RB'): mean=-0.106015, sd=0.066182, n=23
+  ('offense', 'on_field', 'DB'): mean=-0.282719, sd=0.000000, n=1
+  ('offense', 'on_field', 'OL'): mean=0.071253, sd=0.065452, n=224
+  ('offense', 'on_field', 'QB'): mean=-0.053291, sd=0.067672, n=43
+  ('offense', 'on_field', 'RB'): mean=0.188742, sd=0.085841, n=55
+  ('offense', 'on_field', 'TE'): mean=0.095743, sd=0.088758, n=85
+  ('offense', 'on_field', 'WR'): mean=0.090754, sd=0.075745, n=140
+Split-half reliability:
+  ('defense', 'on_field', 'DB'): 0.178611
+  ('defense', 'on_field', 'DL'): 0.014553
+  ('defense', 'on_field', 'LB'): 0.163900
+  ('offense', 'ball_carrier', 'RB'): -0.027827
+  ('offense', 'on_field', 'OL'): 0.330309
+  ('offense', 'on_field', 'QB'): 0.269135
+  ('offense', 'on_field', 'RB'): 0.443415
+  ('offense', 'on_field', 'TE'): 0.180969
+  ('offense', 'on_field', 'WR'): 0.095767

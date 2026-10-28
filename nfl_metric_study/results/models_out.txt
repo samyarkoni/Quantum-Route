@@ -1,0 +1,169 @@
+baseline_home                      C=1.0         0s
+only:ratings_points                C=0.1         0s
+only:ratings_epa                   C=0.008       1s
+only:ratings_other_eff             C=0.008       1s
+only:turnovers                     C=0.03        1s
+only:sacks                         C=0.1         2s
+only:situational                   C=0.03        2s
+only:special_penalty               C=0.002       2s
+only:form_short                    C=0.03        3s
+only:history_long                  C=0.03        3s
+only:record_unadj                  C=0.03        3s
+only:results_form                  C=0.1         4s
+only:qb                            C=0.03        4s
+only:coach                         C=0.03        4s
+only:h2h                           C=0.1         5s
+only:rest                          C=0.0005      5s
+only:travel                        C=0.002       5s
+only:weather_venue                 C=0.008       5s
+only:slot                          C=0.002       6s
+only:division                      C=0.008       6s
+only:hfa_dyn                       C=0.002       6s
+strength_core                      C=0.008       7s
+strength+qb                        C=0.008       7s
+strength+qb+context                C=0.002       8s
+full                               C=0.002      10s
+full-ratings_points                C=0.002      12s
+full-ratings_epa                   C=0.002      14s
+full-ratings_other_eff             C=0.002      15s
+full-turnovers                     C=0.002      17s
+full-sacks                         C=0.002      19s
+full-situational                   C=0.002      21s
+full-special_penalty               C=0.002      22s
+full-form_short                    C=0.002      24s
+full-history_long                  C=0.002      25s
+full-record_unadj                  C=0.002      27s
+full-results_form                  C=0.002      29s
+full-qb                            C=0.002      30s
+full-coach                         C=0.002      32s
+full-h2h                           C=0.002      33s
+full-rest                          C=0.002      35s
+full-travel                        C=0.002      36s
+full-weather_venue                 C=0.002      38s
+full-slot                          C=0.002      40s
+full-division                      C=0.002      42s
+full-hfa_dyn                       C=0.002      44s
+seq02+ratings_epa                  C=0.03       44s
+seq03+ratings_other_eff            C=0.008      45s
+seq04+qb                           C=0.008      45s
+seq05+history_long                 C=0.008      46s
+seq06+form_short                   C=0.008      47s
+seq07+record_unadj                 C=0.002      48s
+seq08+results_form                 C=0.002      49s
+seq09+turnovers                    C=0.002      49s
+seq10+sacks                        C=0.002      50s
+seq11+situational                  C=0.002      51s
+seq12+special_penalty              C=0.002      52s
+seq13+rest                         C=0.002      53s
+seq14+travel                       C=0.002      54s
+seq15+weather_venue                C=0.002      55s
+seq16+slot                         C=0.002      57s
+seq17+division                     C=0.002      59s
+seq18+coach                        C=0.002      60s
+seq19+h2h                          C=0.002      62s
+seq20+hfa_dyn                      C=0.002      64s
+
+Test games 2015-2025: 2885 | home win rate 0.546
+
+=== Each group alone (+ home field) vs baseline; negative dLL = better ===
+                        logloss     acc     auc  dLL_vs_base   ci_lo   ci_hi
+only:ratings_epa         0.6362  0.6298  0.6865      -0.0545 -0.0652 -0.0438
+only:ratings_other_eff   0.6364  0.6378  0.6860      -0.0543 -0.0652 -0.0431
+only:ratings_points      0.6372  0.6354  0.6867      -0.0535 -0.0651 -0.0424
+only:record_unadj        0.6436  0.6312  0.6759      -0.0471 -0.0586 -0.0356
+only:form_short          0.6478  0.6153  0.6639      -0.0430 -0.0533 -0.0321
+only:qb                  0.6480  0.6243  0.6657      -0.0428 -0.0517 -0.0333
+only:history_long        0.6510  0.6218  0.6611      -0.0397 -0.0498 -0.0300
+only:situational         0.6544  0.6052  0.6524      -0.0364 -0.0453 -0.0273
+only:results_form        0.6666  0.5903  0.6255      -0.0241 -0.0322 -0.0160
+only:sacks               0.6694  0.5837  0.6210      -0.0213 -0.0283 -0.0149
+only:turnovers           0.6718  0.5757  0.6100      -0.0189 -0.0250 -0.0131
+only:coach               0.6775  0.5747  0.5915      -0.0133 -0.0186 -0.0077
+only:h2h                 0.6865  0.5504  0.5529      -0.0042 -0.0087  0.0002
+only:rest                0.6899  0.5442  0.5026      -0.0008 -0.0022  0.0005
+only:hfa_dyn             0.6905  0.5452  0.5021      -0.0002 -0.0010  0.0006
+only:slot                0.6906  0.5438  0.5052      -0.0002 -0.0015  0.0010
+only:division            0.6906  0.5452  0.5059      -0.0002 -0.0012  0.0009
+only:special_penalty     0.6908  0.5456  0.5031       0.0000 -0.0012  0.0014
+only:travel              0.6913  0.5452  0.4847       0.0005 -0.0005  0.0016
+only:weather_venue       0.6919  0.5421  0.5069       0.0011 -0.0012  0.0034
+
+=== Key composite models ===
+                     logloss   brier     acc     auc  dLL_vs_base
+baseline_home         0.6907  0.2488  0.5452  0.5058       0.0000
+only:ratings_points   0.6372  0.2232  0.6354  0.6867      -0.0535
+strength_core         0.6349  0.2223  0.6312  0.6887      -0.0558
+strength+qb           0.6288  0.2196  0.6437  0.6979      -0.0619
+strength+qb+context   0.6306  0.2204  0.6374  0.6951      -0.0601
+full                  0.6306  0.2204  0.6326  0.6962      -0.0601
+
+=== Leave-one-group-out from FULL (positive = group helped; CI on full-minus vs full) ===
+            group  loss_when_removed    ci_lo    ci_hi
+               qb            0.00549  0.00246  0.00836
+ratings_other_eff            0.00067 -0.00013  0.00150
+  special_penalty            0.00055 -0.00036  0.00143
+             rest            0.00028 -0.00089  0.00143
+            sacks            0.00026 -0.00012  0.00064
+     results_form            0.00016 -0.00026  0.00055
+             slot            0.00012 -0.00065  0.00094
+      situational            0.00009 -0.00061  0.00076
+      ratings_epa            0.00007 -0.00066  0.00083
+         division            0.00007 -0.00056  0.00068
+   ratings_points            0.00005 -0.00012  0.00022
+          hfa_dyn           -0.00010 -0.00058  0.00037
+              h2h           -0.00012 -0.00027  0.00003
+            coach           -0.00012 -0.00066  0.00043
+        turnovers           -0.00022 -0.00059  0.00012
+     history_long           -0.00026 -0.00061  0.00009
+       form_short           -0.00030 -0.00091  0.00031
+     record_unadj           -0.00053 -0.00134  0.00024
+    weather_venue           -0.00088 -0.00187  0.00012
+           travel           -0.00095 -0.00171 -0.00018
+
+=== Forward additions in order (change vs previous step) ===
+             step  logloss    acc  step_change    ci_lo    ci_hi
+   ratings_points   0.6372 0.6354     -0.05350 -0.06506 -0.04240
+      ratings_epa   0.6348 0.6336     -0.00239 -0.00522  0.00042
+ratings_other_eff   0.6349 0.6312      0.00004 -0.00134  0.00143
+               qb   0.6288 0.6437     -0.00610 -0.00967 -0.00223
+     history_long   0.6287 0.6433     -0.00007 -0.00086  0.00070
+       form_short   0.6297 0.6360      0.00094 -0.00060  0.00253
+     record_unadj   0.6298 0.6374      0.00013 -0.00134  0.00171
+     results_form   0.6296 0.6364     -0.00017 -0.00059  0.00028
+        turnovers   0.6298 0.6350      0.00016 -0.00018  0.00051
+            sacks   0.6295 0.6357     -0.00022 -0.00062  0.00016
+      situational   0.6294 0.6364     -0.00010 -0.00078  0.00057
+  special_penalty   0.6288 0.6409     -0.00068 -0.00162  0.00027
+             rest   0.6286 0.6374     -0.00020 -0.00132  0.00093
+           travel   0.6296 0.6350      0.00106  0.00017  0.00198
+    weather_venue   0.6305 0.6302      0.00084 -0.00019  0.00186
+             slot   0.6304 0.6322     -0.00011 -0.00094  0.00066
+         division   0.6303 0.6360     -0.00009 -0.00070  0.00054
+            coach   0.6304 0.6336      0.00012 -0.00043  0.00066
+              h2h   0.6305 0.6336      0.00012 -0.00003  0.00027
+          hfa_dyn   0.6306 0.6326      0.00010 -0.00037  0.00058
+
+Full vs strength_core: [np.float64(-0.00428), np.float64(-0.00868), np.float64(0.00022)]
+Full vs strength+qb+context: [np.float64(-4e-05), np.float64(-0.00269), np.float64(0.0027)]
+
+=== Full model by week bucket / season (accuracy | logloss) ===
+baseline_home {'wk1-4': '0.525 | 0.696', 'wk5-9': '0.551 | 0.690', 'wk10+': '0.552 | 0.688'}
+strength_core {'wk1-4': '0.610 | 0.653', 'wk5-9': '0.629 | 0.635', 'wk10+': '0.643 | 0.626'}
+full {'wk1-4': '0.594 | 0.663', 'wk5-9': '0.636 | 0.623', 'wk10+': '0.650 | 0.619'}
+                2015   2016   2017   2018   2019   2020   2021   2022   2023   2024   2025
+baseline_home  0.535  0.575  0.570  0.606  0.522  0.510  0.506  0.569  0.559  0.515  0.535
+strength_core  0.613  0.614  0.660  0.650  0.627  0.675  0.605  0.625  0.603  0.680  0.594
+full           0.609  0.626  0.668  0.654  0.631  0.647  0.613  0.617  0.618  0.662  0.616
+
+=== Calibration, full model ===
+            games  predicted  actual
+bin                                 
+(0.0, 0.2]     44      0.166   0.205
+(0.2, 0.3]    155      0.253   0.329
+(0.3, 0.4]    295      0.354   0.305
+(0.4, 0.5]    502      0.454   0.444
+(0.5, 0.6]    620      0.552   0.494
+(0.6, 0.7]    584      0.649   0.622
+(0.7, 0.8]    452      0.748   0.739
+(0.8, 0.9]    210      0.842   0.852
+(0.9, 1.0]     23      0.922   0.870

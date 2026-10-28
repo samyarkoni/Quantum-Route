@@ -1913,6 +1913,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-plays", type=int, default=100)
     parser.add_argument("--min-carries", type=int, default=30)
     parser.add_argument("--bootstrap", type=int, default=0, help="Game-cluster bootstrap replicates")
+    parser.add_argument(
+        "--bootstrap-fixed-penalties",
+        action="store_true",
+        help="Backward-compatible alias; fixed bootstrap penalties are not used in this version",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--selftest", action="store_true", help="Run the simulated-data self-test")
     return parser
@@ -1925,6 +1930,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.selftest:
         _run_selftest()
         return 0
+    if args.bootstrap_fixed_penalties:
+        LOG.info("--bootstrap-fixed-penalties is accepted for compatibility but is not used")
     if not args.input:
         parser.error("--input is required unless --selftest is used")
     if args.folds < 2 or args.max_passes < 1 or args.bootstrap < 0:

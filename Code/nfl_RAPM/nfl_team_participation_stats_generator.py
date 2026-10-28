@@ -21,6 +21,7 @@ import nflreadpy as nfl
 DEFAULT_INPUT_DIR = Path(__file__).resolve().parents[2] / "GAMES"
 DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "TEAM_PARTICIPATION_STATS"
 PLAY_METADATA_COLUMNS = [
+    "spread_line",
     "pos_team",
     "rusher_player_id",
     "rusher_player_name",
@@ -30,6 +31,26 @@ PLAY_METADATA_COLUMNS = [
 GAME_ID_PATTERN = re.compile(
     r"^(?P<season>\d{4})_(?P<week>\d{1,2})_(?P<first_team>[A-Z]{2,3})_(?P<second_team>[A-Z]{2,3})$"
 )
+
+
+@lru_cache(maxsize=8)
+def _load_spreads(season: int) -> dict[str, float | None]:
+    schedules = nfl.load_schedules(seasons=[season])
+    required_columns = {"game_id", "spread_line"}
+    missing_columns = required_columns.difference(schedules.columns)
+    if missing_columns:
+        raise ValueError(
+            "Schedule data is missing required spread fields: "
+            + ", ".join(sorted(missing_columns))
+        )
+
+    spreads: dict[str, float | None] = {}
+    for row in schedules.select(["game_id", "spread_line"]).to_dicts():
+        game_id = row["game_id"]
+        if game_id in spreads:
+            raise ValueError(f"Duplicate schedule record for game {game_id}")
+        spreads[game_id] = row["spread_line"]
+    return spreads
 
 
 @lru_cache(maxsize=8)
@@ -174,6 +195,12 @@ def generate_team_participation_stats(
                 if not game_id:
                     raise ValueError(f"{game_file}:{row_number} has an empty game_id")
                 first_team, second_team = _game_metadata(game_id, season, week)
+                season_spreads = _load_spreads(int(season))
+                if game_id not in season_spreads:
+                    raise ValueError(
+                        f"No schedule record found for {game_id} ({game_file}:{row_number})"
+                    )
+                spread_line = season_spreads[game_id]
                 try:
                     play_id = int(float(row["play_id"]))
                 except (KeyError, TypeError, ValueError) as error:
@@ -205,6 +232,7 @@ def generate_team_participation_stats(
                             "team": team,
                             "opponent": opponent,
                             "team_role": role,
+                            "spread_line": "" if spread_line is None else spread_line,
                             "pos_team": row.get("posteam") or "",
                             **rushing_data,
                         }
