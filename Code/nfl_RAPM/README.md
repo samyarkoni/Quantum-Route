@@ -37,6 +37,56 @@ roster position even if a participation row lists them on the opposite side;
 shrinkage/ranking groups still include side and role. K, P, and LS positions
 are shown as `SPEC` rather than `UNK`.
 
+## Statistical player priors
+
+By default, the model uses modest historical box-score priors from
+`nflreadpy.load_player_stats()` and participation data. It considers the five
+seasons before the earliest modeled season (or before each player-season when
+`--by-season` is used); modeled-season statistics are never used to construct
+that season's prior. For each position family and prior season, the listed
+statistics are oriented so higher is better, standardized within that family
+and season, averaged, then exponentially smoothed toward recent years. The
+default decay is `0.7` per year. The smoothed score is converted to a prior
+mean in yards per play at `0.1` yards per play per standard deviation and
+capped at +/-0.2 yards per play. Ridge penalizes deviations from these
+personalized means; group-prior mode centers the individual statistical
+component within the model's side/role/position group so the group level is
+still estimated from the play data.
+
+Missing player-seasons in an available historical season are imputed at that
+season's position-family 10th percentile for each supported, oriented metric.
+This intentionally avoids using statistics from the season being modeled.
+The output tables include `stat_prior_score`, the raw converted value
+`stat_prior_raw_yds_per_play`, the actual group-centered value applied by the
+model (`stat_prior_yds_per_play`), `stat_prior_years`, and
+`stat_prior_metrics` so the prior can be audited.
+Use `--no-stat-priors` to disable these priors, `--stat-prior-decay` to change
+the recency weighting, or `--stat-prior-scale` to change their yards-per-play
+scale.
+
+The implemented metric families are:
+
+- QB: passing yards/TDs, interceptions, sacks taken, and rushing yards per game.
+- RB: rushing yards/TDs, yards per carry, receiving yards, and fumbles lost per
+  game.
+- WR/TE: receiving yards/TDs, receptions per game, yards per reception, and
+  yards per target.
+- OL: penalties and penalty yards per game, plus listed offensive play
+  participations per game as a snaps-played proxy.
+- EDGE/DT: sacks, tackles for loss, QB hits, forced fumbles, and tackles per game.
+- LB: tackles, tackles for loss, sacks, interceptions, and passes defended per game.
+- CB/S: interceptions, passes defended, forced fumbles, tackles, and tackles for
+  loss per game.
+- K: field goals made/attempt percentage, extra points made, longest field goal,
+  and missed field goals.
+- P: net/gross punt average, inside-20 punts, touchbacks, and longest punt.
+
+The available data does not provide player-level pressures allowed or sacks
+allowed, so those OL measures are omitted. Kicking and punting plays remain
+excluded from RAPM even though those position statistics can form prior values.
+Priors are regularization anchors, not independent causal effects or proof that
+a player caused the observed performance.
+
 ## Run the analysis
 
 Run from the repository root, supplying all team files for the season. The loader
@@ -86,8 +136,9 @@ python3 Code/nfl_RAPM/football_rapm.py --selftest
 
 Each fit selects penalties using game-grouped cross-validation of the reported
 pipeline: the same fold-local gradient-boosted situational baseline, joint
-offense/defense fit, offense/defense alternation, and position-group priors are
-used within each validation fold. The contextual baseline is fit once per fold
+offense/defense fit, offense/defense alternation, position-group priors, and
+historical statistical prior means are used within each validation fold. The
+contextual baseline is fit once per fold
 and kept fixed during player fitting; this avoids retraining the comparatively
 expensive baseline for every candidate penalty and side-alternation pass.
 Progress through baseline folds and penalty candidates is logged. `CV RMSE (full pipeline, grouped folds)` and
