@@ -21,7 +21,6 @@ from sklearn.model_selection import GroupKFold
 
 
 LOG = logging.getLogger("football_rapm")
-MIN_INDIVIDUAL_ESTIMATION_PLAYS = 200
 REQUIRED_COLUMNS = {
     "game_id",
     "play_id",
@@ -46,6 +45,97 @@ POSITION_GROUPS = {
     "DB": {"CB", "S", "FS", "SS", "DB", "SAF"},
     "SPEC": {"K", "P", "LS"},
 }
+DEFAULT_LAMBDA_GRID = np.logspace(1, np.log10(750), 5).tolist()
+DEFAULT_LAMBDA_GRID[-1] = 750.0
+DEFAULT_OFFENSE_PENALTY_RATIOS = (0.5, 1.0, 2.0)
+STAT_PRIOR_LOOKBACK = 5
+DEFAULT_STAT_PRIOR_DECAY = 0.7
+DEFAULT_STAT_PRIOR_SCALE = 0.1
+STAT_PRIOR_MAX_ABS = 0.2
+STAT_PRIOR_METRICS = {
+    "QB": {
+        "pass_yards_per_game": 1,
+        "pass_tds_per_game": 1,
+        "interceptions_per_game": -1,
+        "sacks_taken_per_game": -1,
+        "rush_yards_per_game": 1,
+    },
+    "RB": {
+        "rush_yards_per_game": 1,
+        "rush_tds_per_game": 1,
+        "yards_per_carry": 1,
+        "receiving_yards_per_game": 1,
+        "fumbles_lost_per_game": -1,
+    },
+    "WR": {
+        "receiving_yards_per_game": 1,
+        "receiving_tds_per_game": 1,
+        "receptions_per_game": 1,
+        "yards_per_reception": 1,
+        "yards_per_target": 1,
+    },
+    "TE": {
+        "receiving_yards_per_game": 1,
+        "receiving_tds_per_game": 1,
+        "receptions_per_game": 1,
+        "yards_per_reception": 1,
+        "yards_per_target": 1,
+    },
+    "OL": {
+        "penalties_per_game": -1,
+        "penalty_yards_per_game": -1,
+        "offensive_snaps_per_game": 1,
+    },
+    "EDGE": {
+        "sacks_per_game": 1,
+        "tackles_for_loss_per_game": 1,
+        "qb_hits_per_game": 1,
+        "forced_fumbles_per_game": 1,
+        "tackles_per_game": 1,
+    },
+    "DT": {
+        "sacks_per_game": 1,
+        "tackles_for_loss_per_game": 1,
+        "qb_hits_per_game": 1,
+        "forced_fumbles_per_game": 1,
+        "tackles_per_game": 1,
+    },
+    "LB": {
+        "tackles_per_game": 1,
+        "tackles_for_loss_per_game": 1,
+        "sacks_per_game": 1,
+        "def_interceptions_per_game": 1,
+        "passes_defended_per_game": 1,
+    },
+    "CB": {
+        "def_interceptions_per_game": 1,
+        "passes_defended_per_game": 1,
+        "forced_fumbles_per_game": 1,
+        "tackles_per_game": 1,
+        "tackles_for_loss_per_game": 1,
+    },
+    "S": {
+        "def_interceptions_per_game": 1,
+        "passes_defended_per_game": 1,
+        "tackles_per_game": 1,
+        "forced_fumbles_per_game": 1,
+        "tackles_for_loss_per_game": 1,
+    },
+    "K": {
+        "field_goals_made_per_game": 1,
+        "field_goal_percentage": 1,
+        "extra_points_made_per_game": 1,
+        "longest_field_goal": 1,
+        "field_goals_missed_per_game": -1,
+    },
+    "P": {
+        "net_punt_average": 1,
+        "gross_punt_average": 1,
+        "inside_20_punts_per_game": 1,
+        "punt_touchbacks_per_game": -1,
+        "longest_punt": 1,
+    },
+}
 
 
 @dataclass
@@ -65,20 +155,27 @@ class FitResult:
     design: sparse.csr_matrix
     passes: int
     largest_change: float
-    bootstrap: dict[tuple[str, str, str], tuple[float, float]]
+    bootstrap: dict[tuple[str, str, str], tuple[float, float, float, float]]
+    joint_coefficients: np.ndarray
+    group_priors_enabled: bool
+    offense_penalty_ratio: float = 1.0
+    baseline_features: pd.DataFrame | None = None
+    folds: int = 5
+    max_passes: int = 6
+    tolerance: float = 0.001
+    lambda_candidates: tuple[float, ...] = tuple(DEFAULT_LAMBDA_GRID)
+    offense_penalty_candidates: tuple[float, ...] = DEFAULT_OFFENSE_PENALTY_RATIOS
+    stat_prior: np.ndarray | None = None
+    stat_prior_applied: np.ndarray | None = None
+    coefficients_no_prior: np.ndarray | None = None
+    group_targets_no_prior: np.ndarray | None = None
 
 
-def normalize_yards(yards: float, cap: float = 15.0, shrink: float = 0.25) -> float:
-    """Shrink yardage beyond ``cap`` toward the cap without changing its sign."""
+def normalize_yards(yards: float, cap: float = 15.0) -> float:
+    """Clip yardage to the inclusive range from ``-cap`` to ``cap``."""
     if cap < 0:
         raise ValueError("cap must be non-negative")
-    if not 0 <= shrink <= 1:
-        raise ValueError("shrink must be between 0 and 1")
-    value = float(yards)
-    magnitude = abs(value)
-    if magnitude <= cap:
-        return value
-    return math.copysign(cap + shrink * (magnitude - cap), value)
+    return float(np.clip(float(yards), -cap, cap))
 
 
 def _resolve_inputs(input_value: str) -> list[Path]:
@@ -259,7 +356,7 @@ def load_plays(input_value: str) -> tuple[pd.DataFrame, dict[str, str], dict[str
 
 
 def _load_nflreadpy_positions(player_ids: set[str]) -> dict[str, str]:
-    """Map observed GSIS IDs to roster positions using nflreadpy's player database."""
+    """Map observed GSIS IDs to primary positions using nflreadpy's player database."""
     import nflreadpy as nfl
 
     players = nfl.load_players()
@@ -299,11 +396,274 @@ def _load_nflreadpy_positions(player_ids: set[str]) -> dict[str, str]:
     return {player_id: database_positions[player_id] for player_id in matched}
 
 
+def _stat_prior_family(position: str | None) -> str | None:
+    normalized = _normalize_position(position)
+    if normalized in {"QB", "RB", "WR", "TE", "K", "P"}:
+        return normalized
+    if normalized == "FB":
+        return "RB"
+    if normalized == "LS":
+        return "OL"
+    if normalized in {"T", "G", "C", "OT", "OG", "OL", "LT", "RT", "LG", "RG"}:
+        return "OL"
+    if normalized in {"DE", "EDGE", "OLB"}:
+        return "EDGE"
+    if normalized in {"DT", "NT", "DL"}:
+        return "DT"
+    if normalized in {"ILB", "MLB", "LB"}:
+        return "LB"
+    if normalized == "CB":
+        return "CB"
+    if normalized in {"S", "FS", "SS", "SAF", "DB"}:
+        return "S"
+    return None
+
+
+def _stat_number(row: pd.Series, column: str) -> float:
+    value = pd.to_numeric(pd.Series([row.get(column)]), errors="coerce").iloc[0]
+    return float(value) if pd.notna(value) and np.isfinite(value) else float("nan")
+
+
+def _stat_ratio(numerator: float, denominator: float) -> float:
+    if not np.isfinite(numerator) or not np.isfinite(denominator) or denominator <= 0:
+        return float("nan")
+    return numerator / denominator
+
+
+def _player_stat_features(row: pd.Series) -> dict[str, float]:
+    games = _stat_number(row, "games")
+    carries = _stat_number(row, "carries")
+    receptions = _stat_number(row, "receptions")
+    targets = _stat_number(row, "targets")
+    fg_attempts = _stat_number(row, "fg_att")
+    pat_attempts = _stat_number(row, "pat_att")
+    punt_attempts = _stat_number(row, "pt_att")
+
+    def per_game(column: str) -> float:
+        return _stat_ratio(_stat_number(row, column), games)
+
+    def rate(numerator: str, denominator: float) -> float:
+        return _stat_ratio(_stat_number(row, numerator), denominator)
+
+    assists = _stat_number(row, "def_tackle_assists")
+    if not np.isfinite(assists):
+        assists = _stat_number(row, "def_tackles_with_assist")
+    return {
+        "pass_yards_per_game": per_game("passing_yards"),
+        "pass_tds_per_game": per_game("passing_tds"),
+        "interceptions_per_game": per_game("passing_interceptions"),
+        "def_interceptions_per_game": per_game("def_interceptions"),
+        "sacks_taken_per_game": per_game("sacks_suffered"),
+        "rush_yards_per_game": per_game("rushing_yards"),
+        "rush_tds_per_game": per_game("rushing_tds"),
+        "yards_per_carry": rate("rushing_yards", carries),
+        "receiving_yards_per_game": per_game("receiving_yards"),
+        "fumbles_lost_per_game": per_game(
+            "fumbles_lost_total"
+            if pd.notna(row.get("fumbles_lost_total"))
+            else "rushing_fumbles_lost"
+        ),
+        "receiving_tds_per_game": per_game("receiving_tds"),
+        "receptions_per_game": _stat_ratio(receptions, games),
+        "yards_per_reception": rate("receiving_yards", receptions),
+        "yards_per_target": rate("receiving_yards", targets),
+        "penalties_per_game": per_game("penalties"),
+        "penalty_yards_per_game": per_game("penalty_yards"),
+        "sacks_per_game": per_game("def_sacks"),
+        "tackles_for_loss_per_game": per_game("def_tackles_for_loss"),
+        "qb_hits_per_game": per_game("def_qb_hits"),
+        "forced_fumbles_per_game": per_game("def_fumbles_forced"),
+        "tackles_per_game": _stat_ratio(
+            sum(
+                value
+                for value in (
+                    _stat_number(row, "def_tackles_solo"),
+                    assists,
+                )
+                if np.isfinite(value)
+            ),
+            games,
+        ),
+        "passes_defended_per_game": per_game("def_pass_defended"),
+        "offensive_snaps_per_game": _stat_ratio(
+            _stat_number(row, "offensive_snaps"), games
+        ),
+        "field_goals_made_per_game": per_game("fg_made"),
+        "field_goal_percentage": rate("fg_made", fg_attempts),
+        "extra_points_made_per_game": per_game("pat_made"),
+        "longest_field_goal": _stat_number(row, "fg_long"),
+        "field_goals_missed_per_game": per_game("fg_missed"),
+        "net_punt_average": rate("pt_net_yards", punt_attempts),
+        "gross_punt_average": rate("pt_yards", punt_attempts),
+        "inside_20_punts_per_game": per_game("pt_inside_20"),
+        "punt_touchbacks_per_game": per_game("pt_touchback"),
+        "longest_punt": _stat_number(row, "pt_long"),
+    }
+
+
+def _load_nflreadpy_player_stats(seasons: set[int]) -> pd.DataFrame:
+    """Load historical regular-season player stats used only as RAPM priors."""
+    if not seasons:
+        return pd.DataFrame()
+    import nflreadpy as nfl
+
+    stats = nfl.load_player_stats(seasons=sorted(seasons), summary_level="reg").to_pandas()
+    required = {"player_id", "position", "season"}
+    missing = required.difference(stats.columns)
+    if missing:
+        raise ValueError(
+            "nflreadpy player stats are missing required columns: "
+            + ", ".join(sorted(missing))
+        )
+    stats["player_id"] = stats["player_id"].astype("string").str.strip()
+    stats["season"] = pd.to_numeric(stats["season"], errors="coerce")
+    stats = stats.loc[stats["player_id"].notna() & stats["season"].notna()].copy()
+    stats["season"] = stats["season"].astype(int)
+    participation = nfl.load_participation(seasons=sorted(seasons)).select(
+        ["nflverse_game_id", "offense_players"]
+    ).to_pandas()
+    participation["season"] = pd.to_numeric(
+        participation["nflverse_game_id"].astype("string").str.slice(0, 4),
+        errors="coerce",
+    )
+    snap_counts: Counter[tuple[int, str]] = Counter()
+    for row in participation.itertuples(index=False):
+        if pd.isna(row.season):
+            continue
+        for player_id in set(_list_values(row.offense_players)):
+            snap_counts[(int(row.season), player_id)] += 1
+    snap_frame = pd.DataFrame(
+        [
+            {"season": year, "player_id": player_id, "offensive_snaps": count}
+            for (year, player_id), count in snap_counts.items()
+        ]
+    )
+    if not snap_frame.empty:
+        stats = stats.merge(
+            snap_frame, on=["season", "player_id"], how="left", validate="one_to_one"
+        )
+    else:
+        stats["offensive_snaps"] = np.nan
+    LOG.info(
+        "Loaded %s nflreadpy player-season stat rows for prior seasons %s",
+        f"{len(stats):,}",
+        ", ".join(str(year) for year in sorted(seasons)),
+    )
+    return stats
+
+
+def _make_stat_prior_vector(
+    columns: Sequence[tuple[str, str, str]],
+    metadata: dict[tuple[str, str, str], dict[str, str]],
+    historical_stats: pd.DataFrame,
+    modeled_seasons: set[int],
+    by_season: bool,
+    decay: float,
+    scale: float,
+) -> tuple[np.ndarray, dict[tuple[str, str, str], dict[str, float]]]:
+    """Create modest position-specific prior means using only earlier seasons."""
+    if not math.isfinite(decay) or not 0 < decay <= 1:
+        raise ValueError("--stat-prior-decay must be in (0, 1]")
+    if not math.isfinite(scale) or scale < 0:
+        raise ValueError("--stat-prior-scale must be non-negative")
+    values = np.zeros(len(columns), dtype=float)
+    details: dict[tuple[str, str, str], dict[str, float]] = {}
+    if historical_stats.empty or not modeled_seasons:
+        return values, details
+
+    stat_rows: dict[tuple[int, str], tuple[str, dict[str, float]]] = {}
+    seasonal_population: defaultdict[tuple[int, str, str], list[float]] = defaultdict(list)
+    for _, row in historical_stats.iterrows():
+        player_id = str(row["player_id"])
+        season = int(row["season"])
+        family = _stat_prior_family(row.get("position"))
+        if not family:
+            continue
+        features = _player_stat_features(row)
+        stat_rows[(season, player_id)] = (family, features)
+        for feature, direction in STAT_PRIOR_METRICS[family].items():
+            raw_value = features.get(feature, float("nan"))
+            if np.isfinite(raw_value):
+                seasonal_population[(season, family, feature)].append(
+                    float(direction) * raw_value
+                )
+
+    season_feature_stats: dict[tuple[int, str, str], tuple[float, float, float]] = {}
+    for key, population in seasonal_population.items():
+        array = np.asarray(population, dtype=float)
+        season_feature_stats[key] = (
+            float(np.mean(array)),
+            float(np.std(array)),
+            float(np.quantile(array, 0.1)),
+        )
+
+    for index, column in enumerate(columns):
+        side, role, _ = column
+        if side == "defense" and role != "on_field":
+            continue
+        player = metadata[column]
+        player_id = player["player_id"]
+        family = _stat_prior_family(player.get("position"))
+        if not family:
+            continue
+        target_season = (
+            int(player["season"])
+            if by_season and player.get("season")
+            else min(modeled_seasons)
+        )
+        prior_years = [
+            year
+            for year in range(target_season - STAT_PRIOR_LOOKBACK, target_season)
+            if year >= 1999
+        ]
+        yearly_scores: list[float] = []
+        used_metrics: set[str] = set()
+        for year in prior_years:
+            row_family_features = stat_rows.get((year, player_id))
+            if row_family_features is not None and row_family_features[0] != family:
+                row_family_features = None
+            metric_scores: list[float] = []
+            for feature, direction in STAT_PRIOR_METRICS[family].items():
+                stats_for_feature = season_feature_stats.get((year, family, feature))
+                if stats_for_feature is None:
+                    continue
+                mean, std, lower_tail = stats_for_feature
+                actual = (
+                    row_family_features[1].get(feature, float("nan"))
+                    if row_family_features is not None
+                    else float("nan")
+                )
+                oriented = float(direction) * actual if np.isfinite(actual) else lower_tail
+                standardized = (oriented - mean) / std if std > 1e-12 else 0.0
+                metric_scores.append(float(np.clip(standardized, -3.0, 3.0)))
+                used_metrics.add(feature)
+            if metric_scores:
+                yearly_scores.append(float(np.mean(metric_scores)))
+            else:
+                yearly_scores.append(float("nan"))
+
+        valid = [(year, value) for year, value in zip(prior_years, yearly_scores) if np.isfinite(value)]
+        if not valid:
+            continue
+        weights = np.asarray([decay ** (target_season - year - 1) for year, _ in valid])
+        smoothed_score = float(
+            np.average(np.asarray([value for _, value in valid]), weights=weights)
+        )
+        prior_value = float(np.clip(scale * smoothed_score, -STAT_PRIOR_MAX_ABS, STAT_PRIOR_MAX_ABS))
+        values[index] = prior_value
+        details[column] = {
+            "stat_prior_score": smoothed_score,
+            "stat_prior_years": float(len(valid)),
+            "stat_prior_metrics": float(len(used_metrics)),
+        }
+    return values, details
+
+
 def _normalize_position(position: str | None) -> str | None:
     if position is None or pd.isna(position):
         return None
     normalized = re.sub(r"[^A-Z]", "", str(position).upper())
-    for positions in POSITION_GROUPS.values():
+    for group, positions in POSITION_GROUPS.items():
         if normalized in positions:
             return normalized
     return None
@@ -314,7 +674,9 @@ def _position_group(position: str | None) -> str:
     normalized = _normalize_position(position)
     if normalized is None:
         return "UNK"
-    return next(group for group, positions in POSITION_GROUPS.items() if normalized in positions)
+    return next(
+        group for group, positions in POSITION_GROUPS.items() if normalized in positions
+    )
 
 
 def _load_offense_positions(
@@ -428,23 +790,132 @@ def _score_differential(data: pd.DataFrame) -> pd.Series:
     return result
 
 
+def _low_leverage_band(seconds_remaining: int) -> tuple[str, int] | None:
+    """Return the user-specified regulation time band and minimum lead."""
+    if seconds_remaining > 1800:
+        return None
+    if seconds_remaining >= 900:
+        return "30:00-15:00", 21
+    if seconds_remaining >= 600:
+        return "15:00-10:00", 17
+    if seconds_remaining >= 300:
+        return "10:00-5:00", 14
+    if seconds_remaining >= 180:
+        return "5:00-3:00", 10
+    if seconds_remaining >= 0:
+        return "3:00-0:00", 9
+    return None
+
+
+def _text_or_empty(value: object) -> str:
+    """Convert scalar pandas values to text without boolean-testing pd.NA."""
+    if value is None or pd.isna(value):
+        return ""
+    return str(value)
+
+
+def _low_leverage_filter(
+    data: pd.DataFrame,
+) -> tuple[pd.Series, dict[str, int], int]:
+    """Mark low-leverage rows from pre-play regulation score and clock state."""
+    excluded = pd.Series(False, index=data.index)
+    by_band: Counter[str] = Counter()
+    missing_state = 0
+    required_scores = {"home_team_score", "away_team_score"}
+    if not required_scores.issubset(data.columns):
+        return excluded, {}, 0
+
+    for _, game in data.groupby("game_id", sort=False, dropna=False):
+        game = game.copy()
+        try:
+            game["_play_order"] = pd.to_numeric(game["play_id"], errors="raise")
+        except (TypeError, ValueError):
+            game["_play_order"] = game["play_id"].astype(str)
+        game = game.sort_values("_play_order", kind="stable")
+
+        scores_available = (
+            pd.to_numeric(game["home_team_score"], errors="coerce").notna()
+            & pd.to_numeric(game["away_team_score"], errors="coerce").notna()
+        ).any()
+        home_score = 0.0
+        away_score = 0.0
+        quarter = 1
+        for index, row in game.iterrows():
+            play_type = _text_or_empty(row.get("play_type")).strip().lower()
+            marker = re.fullmatch(r"start_quarter_(\d+)", play_type)
+            if marker:
+                quarter = int(marker.group(1))
+            explicit_quarter = pd.to_numeric(
+                pd.Series([row.get("qtr")]), errors="coerce"
+            ).iloc[0]
+            if pd.notna(explicit_quarter):
+                quarter = int(explicit_quarter)
+
+            seconds = pd.to_numeric(
+                pd.Series([row.get("game_seconds_remaining")]), errors="coerce"
+            ).iloc[0]
+            if pd.isna(seconds):
+                clock_match = re.fullmatch(
+                    r"\s*(\d{1,2}):([0-5]\d)\s*",
+                    _text_or_empty(row.get("time_on_clock_start")),
+                )
+                if clock_match and 1 <= quarter <= 4:
+                    clock_seconds = int(clock_match.group(1)) * 60 + int(clock_match.group(2))
+                    seconds = (4 - quarter) * 900 + clock_seconds
+
+            regulation = 1 <= quarter <= 4
+            band = _low_leverage_band(int(seconds)) if pd.notna(seconds) and regulation else None
+            if band is not None and scores_available:
+                lead = abs(home_score - away_score)
+                if lead >= band[1]:
+                    excluded.at[index] = True
+                    by_band[band[0]] += 1
+            elif (
+                regulation
+                and play_type in {"run", "rush", "pass"}
+                and (pd.isna(seconds) or not scores_available)
+            ):
+                missing_state += 1
+
+            current_home = pd.to_numeric(
+                pd.Series([row.get("home_team_score")]), errors="coerce"
+            ).iloc[0]
+            current_away = pd.to_numeric(
+                pd.Series([row.get("away_team_score")]), errors="coerce"
+            ).iloc[0]
+            if pd.notna(current_home):
+                home_score = float(current_home)
+            if pd.notna(current_away):
+                away_score = float(current_away)
+    return excluded, dict(by_band), missing_state
+
+
 def clean_plays(
-    data: pd.DataFrame, cap: float, shrink: float, use_score: bool
+    data: pd.DataFrame, cap: float, use_score: bool
 ) -> tuple[pd.DataFrame, dict[str, int], float]:
     """Filter to run/pass plays and add normalized yards while retaining raw yards."""
     _print_data_checks(data)
     play_type = data["play_type"].fillna("").str.strip().str.lower()
     keep_type = play_type.isin({"run", "rush", "pass"})
+    low_leverage, low_leverage_by_band, low_leverage_state_missing = _low_leverage_filter(data)
+    low_leverage = low_leverage & keep_type
+    missing_play_type = data["play_type"].isna() | play_type.eq("")
     yards = pd.to_numeric(data["yards_gained"], errors="coerce")
     has_yards = yards.notna() & np.isfinite(yards)
     has_players = data["offense_player_ids"].map(lambda value: bool(_list_values(value))) & data[
         "defense_player_ids"
     ].map(lambda value: bool(_list_values(value)))
     dropped = {
-        "non_run_pass_or_missing_type": int((~keep_type).sum()),
+        "missing_play_type": int(missing_play_type.sum()),
+        "unsupported_play_type": int((~keep_type & ~missing_play_type).sum()),
         "missing_or_nonfinite_yards": int((keep_type & ~has_yards).sum()),
         "missing_player_lists": int((keep_type & has_yards & ~has_players).sum()),
+        "low_leverage": int(low_leverage.sum()),
+        "low_leverage_state_missing": low_leverage_state_missing,
     }
+    dropped.update({
+        f"low_leverage_{band}": count for band, count in low_leverage_by_band.items()
+    })
     mismatch_rate = float("nan")
     if {"starting_yard", "ending_yard"}.issubset(data.columns):
         starting = pd.to_numeric(data["starting_yard"], errors="coerce")
@@ -459,13 +930,14 @@ def clean_plays(
                 "Starting/ending yardage absolute-distance mismatch rate (1-yard tolerance): %.1f%%",
                 100 * mismatch_rate,
             )
+    LOG.info("Low-leverage exclusions by time band: %s", low_leverage_by_band)
     LOG.info("Dropped rows: %s", dropped)
-    cleaned = data.loc[keep_type & has_yards & has_players].copy()
+    cleaned = data.loc[keep_type & ~low_leverage & has_yards & has_players].copy()
     cleaned["play_type"] = np.where(
         cleaned["play_type"].str.strip().str.lower().isin({"run", "rush"}), "rush", "pass"
     )
     cleaned["raw_yards"] = yards.loc[cleaned.index].astype(float)
-    cleaned["yards"] = cleaned["raw_yards"].map(lambda value: normalize_yards(value, cap, shrink))
+    cleaned["yards"] = cleaned["raw_yards"].map(lambda value: normalize_yards(value, cap))
     if "season" not in cleaned:
         cleaned["season"] = ""
     cleaned["season"] = cleaned["season"].fillna("").astype(str)
@@ -572,6 +1044,7 @@ def _make_design(
                     {
                         "player_id": player_id,
                         "player_name": names.get(player_id, ""),
+                        "position": position,
                         "position_group": group,
                         "season": season if by_season else "",
                     },
@@ -594,6 +1067,7 @@ def _make_design(
                     {
                         "player_id": carrier_id,
                         "player_name": names.get(carrier_id, ""),
+                        "position": position,
                         "position_group": _position_group(position),
                         "season": season if by_season else "",
                     },
@@ -695,7 +1169,12 @@ def _baseline_oof(
     for play_type in np.unique(play_types):
         rows = np.flatnonzero(play_types == play_type)
         row_set = set(rows.tolist())
-        for train_all, test_all in split_indices:
+        for fold_number, (train_all, test_all) in enumerate(split_indices):
+            LOG.info(
+                "Fitting contextual-baseline OOF fold %d/%d",
+                fold_number + 1,
+                len(split_indices),
+            )
             train = np.asarray([idx for idx in train_all if idx in row_set], dtype=int)
             test = np.asarray([idx for idx in test_all if idx in row_set], dtype=int)
             if not len(test):
@@ -768,6 +1247,11 @@ def _nested_cv_baselines(
     validation_baselines = []
     play_types = frame["play_type"].to_numpy()
     for fold_number, (train, test) in enumerate(outer_splits):
+        LOG.info(
+            "Preparing contextual-baseline CV fold %d/%d",
+            fold_number + 1,
+            len(outer_splits),
+        )
         train_frame = frame.iloc[train].reset_index(drop=True)
         test_frame = frame.iloc[test].reset_index(drop=True)
         train_target = target[train]
@@ -821,40 +1305,96 @@ def _ridge_fit(
     design: sparse.csr_matrix,
     target: np.ndarray,
     alpha: float,
+    fit_intercept: bool = True,
+    column_penalty_factors: np.ndarray | None = None,
+    prior_mean: np.ndarray | None = None,
 ) -> tuple[np.ndarray, float]:
-    estimator = Ridge(alpha=float(alpha), fit_intercept=True, solver="lsqr")
-    estimator.fit(design, target)
-    return np.asarray(estimator.coef_).ravel(), float(estimator.intercept_)
+    prior = (
+        np.zeros(design.shape[1], dtype=float)
+        if prior_mean is None
+        else np.asarray(prior_mean, dtype=float)
+    )
+    if len(prior) != design.shape[1] or not np.isfinite(prior).all():
+        raise ValueError("prior means must be finite and match design columns")
+    adjusted_target = target - np.asarray(design @ prior).ravel()
+    scales = (
+        np.ones(design.shape[1], dtype=float)
+        if column_penalty_factors is None
+        else 1.0 / np.sqrt(np.asarray(column_penalty_factors, dtype=float))
+    )
+    if len(scales) != design.shape[1] or np.any(scales <= 0) or not np.isfinite(scales).all():
+        raise ValueError("column penalty factors must be finite, positive, and match design columns")
+    scaled_design = design.multiply(scales).tocsr()
+    estimator = Ridge(alpha=float(alpha), fit_intercept=fit_intercept, solver="lsqr")
+    estimator.fit(scaled_design, adjusted_target)
+    coefficients = prior + np.asarray(estimator.coef_).ravel() * scales
+    return coefficients, float(estimator.intercept_)
 
 
 def _cross_validated_rmse(
     design: sparse.csr_matrix,
     target: np.ndarray,
-    prior: np.ndarray,
+    columns: Sequence[tuple[str, str, str]],
+    group_keys: Sequence[tuple[str, str, str]],
     validation_baselines: Sequence[
         tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
     ],
     alpha: float,
+    offense_penalty_ratio: float,
+    max_passes: int,
+    tolerance: float,
+    group_priors: bool,
+    stat_prior: np.ndarray | None = None,
 ) -> float:
     if not validation_baselines:
         return float("nan")
     squared_error = 0.0
     observations = 0
     for train, test, train_baseline, test_baseline in validation_baselines:
-        centered_target = (
-            target[train]
-            - train_baseline
-            - np.asarray(design[train] @ prior).ravel()
+        train_design = design[train].tocsr()
+        test_design = design[test].tocsr()
+        train_counts = np.asarray((train_design != 0).sum(axis=0)).ravel().astype(float)
+        prior = (
+            np.zeros(design.shape[1], dtype=float)
+            if stat_prior is None
+            else np.asarray(stat_prior, dtype=float)
         )
-        train_counts = np.asarray((design[train] != 0).sum(axis=0)).ravel().astype(float)
-        coefficients, intercept = _fit_player_coefficients(
-            design[train], centered_target, alpha, prior, train_counts
+        prior = (
+            _center_group_values(prior, train_counts, group_keys)
+            if group_priors
+            else prior
         )
-        prediction = (
-            test_baseline
-            + np.asarray(design[test] @ coefficients).ravel()
-            + intercept
+
+        joint_coefficients, intercept = _ridge_fit(
+            train_design,
+            target[train] - train_baseline,
+            alpha,
+            column_penalty_factors=np.asarray([
+                offense_penalty_ratio if column[0] == "offense" else 1.0
+                for column in columns
+            ]),
+            prior_mean=prior,
         )
+        train_baseline = train_baseline + intercept
+        test_baseline = test_baseline + intercept
+
+        coefficients, _, _, _, _ = _alternate_sides(
+            train_design,
+            target[train],
+            train_baseline,
+            columns,
+            train_counts,
+            group_keys,
+            alpha,
+            max(0, max_passes - 1),
+            tolerance,
+            group_priors,
+            initial_coefficients=joint_coefficients,
+            log_iterations=False,
+            offense_penalty_ratio=offense_penalty_ratio,
+            stat_prior=stat_prior,
+        )
+        prediction = test_baseline + np.asarray(test_design @ coefficients).ravel()
         squared_error += float(np.square(target[test] - prediction).sum())
         observations += len(test)
     return math.sqrt(squared_error / observations) if observations else float("nan")
@@ -875,59 +1415,162 @@ def _intercept_cv_rmse(target: np.ndarray, frame: pd.DataFrame, folds: int) -> f
     return math.sqrt(squared_error / observations) if observations else float("nan")
 
 
-def _fit_player_coefficients(
-    design: sparse.csr_matrix,
-    centered_target: np.ndarray,
-    alpha: float,
-    prior: np.ndarray,
-    counts: np.ndarray,
-) -> tuple[np.ndarray, float]:
-    """Fit only well-sampled player deviations; keep other effects at their prior."""
-    individually_fit = counts > MIN_INDIVIDUAL_ESTIMATION_PLAYS
-    coefficients = prior.copy()
-    if not individually_fit.any():
-        return coefficients, float(np.mean(centered_target)) if len(centered_target) else 0.0
-    deviations, intercept = _ridge_fit(
-        design[:, individually_fit], centered_target, alpha
-    )
-    coefficients[individually_fit] += deviations
-    return coefficients, intercept
-
-
 def _group_means(
     coefficients: np.ndarray,
     counts: np.ndarray,
     group_keys: Sequence[tuple[str, str, str]],
-    individually_fit: np.ndarray | None = None,
 ) -> np.ndarray:
-    if individually_fit is None:
-        individually_fit = counts > MIN_INDIVIDUAL_ESTIMATION_PLAYS
     accum: defaultdict[tuple[str, str, str], list[float]] = defaultdict(lambda: [0.0, 0.0])
-    for beta, count, group, include in zip(coefficients, counts, group_keys, individually_fit):
-        if not include:
-            continue
+    for beta, count, group in zip(coefficients, counts, group_keys):
         accum[group][0] += float(beta) * float(count)
         accum[group][1] += float(count)
     means = {
         group: total / count if count else 0.0
         for group, (total, count) in accum.items()
     }
-    return np.asarray([means.get(group, 0.0) for group in group_keys], dtype=float)
+    return np.asarray([means[group] for group in group_keys], dtype=float)
 
 
-def _next_group_targets(
-    coefficients: np.ndarray,
+def _center_group_values(
+    values: np.ndarray,
     counts: np.ndarray,
     group_keys: Sequence[tuple[str, str, str]],
-    group_priors: bool,
 ) -> np.ndarray:
-    individually_fit = counts > MIN_INDIVIDUAL_ESTIMATION_PLAYS
-    means = _group_means(coefficients, counts, group_keys, individually_fit)
-    if group_priors:
-        return means
+    return values - _group_means(values, counts, group_keys)
+
+
+def _alternate_sides(
+    design: sparse.csr_matrix,
+    target: np.ndarray,
+    baseline: np.ndarray,
+    columns: Sequence[tuple[str, str, str]],
+    counts: np.ndarray,
+    group_keys: Sequence[tuple[str, str, str]],
+    alpha: float,
+    max_passes: int,
+    tolerance: float,
+    group_priors: bool,
+    initial_coefficients: np.ndarray | None = None,
+    log_name: str = "fit",
+    cv_rmse: float = float("nan"),
+    log_iterations: bool = True,
+    offense_penalty_ratio: float = 1.0,
+    stat_prior: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, int, float]:
+    """Alternate offense and defense ridge blocks using one fixed penalty."""
+    sides = np.asarray([column[0] for column in columns])
+    offense_indices = np.flatnonzero(sides == "offense")
+    defense_indices = np.flatnonzero(sides == "defense")
+    offense = design[:, offense_indices].tocsr()
+    defense = design[:, defense_indices].tocsr()
+    offense_counts = counts[offense_indices]
+    defense_counts = counts[defense_indices]
+    offense_groups = [group_keys[index] for index in offense_indices]
+    defense_groups = [group_keys[index] for index in defense_indices]
+    coefficients = (
+        np.zeros(design.shape[1], dtype=float)
+        if initial_coefficients is None
+        else np.asarray(initial_coefficients, dtype=float).copy()
+    )
+    prior = (
+        np.zeros(design.shape[1], dtype=float)
+        if stat_prior is None
+        else np.asarray(stat_prior, dtype=float)
+    )
+    if len(prior) != design.shape[1] or not np.isfinite(prior).all():
+        raise ValueError("stat prior must be finite and match design columns")
+    offense_beta = coefficients[offense_indices].copy()
+    defense_beta = coefficients[defense_indices].copy()
+    offense_prior = (
+        _group_means(offense_beta, offense_counts, offense_groups)
+        if group_priors
+        else np.zeros(len(offense_indices), dtype=float)
+    )
+    defense_prior = (
+        _group_means(defense_beta, defense_counts, defense_groups)
+        if group_priors
+        else np.zeros(len(defense_indices), dtype=float)
+    )
+    offense_stat_prior = (
+        _center_group_values(prior[offense_indices], offense_counts, offense_groups)
+        if group_priors
+        else prior[offense_indices]
+    )
+    defense_stat_prior = (
+        _center_group_values(prior[defense_indices], defense_counts, defense_groups)
+        if group_priors
+        else prior[defense_indices]
+    )
+    previous_offense_deviation: np.ndarray | None = None
+    previous_defense_deviation: np.ndarray | None = None
+    largest_change = float("inf")
+    passes = 0
+    for pass_number in range(max_passes):
+        offense_residual = (
+            target
+            - baseline
+            - np.asarray(defense @ defense_beta).ravel()
+        )
+        offense_beta, _ = _ridge_fit(
+            offense,
+            offense_residual,
+            alpha * offense_penalty_ratio,
+            fit_intercept=False,
+            prior_mean=offense_prior + offense_stat_prior,
+        )
+        if group_priors:
+            offense_prior = _group_means(offense_beta, offense_counts, offense_groups)
+
+        defense_residual = (
+            target
+            - baseline
+            - np.asarray(offense @ offense_beta).ravel()
+        )
+        defense_beta, _ = _ridge_fit(
+            defense,
+            defense_residual,
+            alpha,
+            fit_intercept=False,
+            prior_mean=defense_prior + defense_stat_prior,
+        )
+        if group_priors:
+            defense_prior = _group_means(defense_beta, defense_counts, defense_groups)
+
+        offense_deviation = offense_beta - offense_prior - offense_stat_prior
+        defense_deviation = defense_beta - defense_prior - defense_stat_prior
+        changes: list[float] = []
+        if previous_offense_deviation is not None and len(offense_deviation):
+            changes.append(
+                float(np.max(np.abs(offense_deviation - previous_offense_deviation)))
+            )
+        if previous_defense_deviation is not None and len(defense_deviation):
+            changes.append(
+                float(np.max(np.abs(defense_deviation - previous_defense_deviation)))
+            )
+        largest_change = max(changes) if changes else float("inf")
+        passes = pass_number + 1
+        if log_iterations:
+            LOG.info(
+                "%s pass %d (offense/defense alternation): lambda=%.5g CV RMSE=%.4f "
+                "largest deviation change=%.6f",
+                log_name,
+                passes + 1,
+                alpha,
+                cv_rmse,
+                largest_change,
+            )
+        previous_offense_deviation = offense_deviation.copy()
+        previous_defense_deviation = defense_deviation.copy()
+        coefficients[offense_indices] = offense_beta
+        coefficients[defense_indices] = defense_beta
+        if passes > 1 and largest_change < tolerance:
+            break
+    coefficients[offense_indices] = offense_beta
+    coefficients[defense_indices] = defense_beta
     targets = np.zeros_like(coefficients)
-    targets[~individually_fit] = means[~individually_fit]
-    return targets
+    targets[offense_indices] = offense_prior
+    targets[defense_indices] = defense_prior
+    return coefficients, targets, baseline, passes, largest_change
 
 
 def fit_model(
@@ -944,118 +1587,144 @@ def fit_model(
     tolerance: float,
     group_priors: bool,
     seed: int,
+    offense_penalty_ratios: Sequence[float] = DEFAULT_OFFENSE_PENALTY_RATIOS,
+    stat_prior: np.ndarray | None = None,
 ) -> FitResult:
-    """Fit one of the three supported play selections with iterative baselines."""
+    """Fit one joint ridge model, then alternate offense/defense blocks."""
     y = frame["yards"].to_numpy(dtype=float)
-    baseline = _initial_type_mean(y, frame)
-    baseline_target = y.copy()
-    prior = np.zeros(design.shape[1], dtype=float)
-    previous_deviation: np.ndarray | None = None
     alpha = float(lambdas[len(lambdas) // 2])
-    final_cv = float("nan")
-    largest_change = float("inf")
     intercept_rmse = _intercept_cv_rmse(y, frame, folds)
-    baseline_rmse = float("nan")
-    passes = 0
+    LOG.info("%s: fitting out-of-fold contextual baseline", name)
     baseline_only = _baseline_predictions(features, y, frame, folds, seed)
-    baseline_rmse = float(np.sqrt(np.mean(np.square(y - baseline_only))))
-    for pass_number in range(max_passes):
-        validation_baselines = _nested_cv_baselines(
-            features,
-            baseline_target,
-            frame,
-            folds,
-            seed + pass_number * 100,
-            type_means_only=pass_number == 0,
-        )
-        if pass_number < 2:
-            scores = [
-                _cross_validated_rmse(
-                    design, y, prior, validation_baselines, candidate
-                )
-                for candidate in lambdas
-            ]
-            finite = [(score, candidate) for score, candidate in zip(scores, lambdas) if np.isfinite(score)]
-            if finite:
-                final_cv, alpha = min(finite)
-                if alpha in {float(lambdas[0]), float(lambdas[-1])}:
-                    LOG.warning(
-                        "%s pass %d selected an edge lambda (%.5g); consider widening --lambda-grid",
-                        name,
-                        pass_number + 1,
-                        alpha,
-                    )
-            else:
-                LOG.warning("%s: game-grouped CV unavailable; using lambda %.4g", name, alpha)
-                final_cv = float("nan")
-        residual = y - baseline - np.asarray(design @ prior).ravel()
-        coefficients, _ = _fit_player_coefficients(
-            design, residual, alpha, prior, counts
-        )
-        individually_fit = counts > MIN_INDIVIDUAL_ESTIMATION_PLAYS
-        final_group_means = _group_means(
-            coefficients, counts, group_keys, individually_fit
-        )
-        coefficients[~individually_fit] = final_group_means[~individually_fit]
-        prior[~individually_fit] = final_group_means[~individually_fit]
-        next_prior = _next_group_targets(
-            coefficients, counts, group_keys, group_priors
-        )
-        next_deviation = coefficients - next_prior
-        largest_change = (
-            float(np.max(np.abs(next_deviation - previous_deviation)))
-            if previous_deviation is not None and len(next_deviation)
-            else float("inf")
-        )
-        passes = pass_number + 1
-        LOG.info(
-            "%s pass %d: lambda=%.5g CV RMSE=%.4f largest deviation change=%.6f",
+    validation_baselines = _nested_cv_baselines(
+        features, y, frame, folds, seed, type_means_only=False
+    )
+    LOG.info("%s: fitting player effects across %d penalty combinations", name, len(lambdas) * len(offense_penalty_ratios))
+    baseline_oof = np.full(len(y), np.nan, dtype=float)
+    for _, test, _, test_baseline in validation_baselines:
+        baseline_oof[test] = test_baseline
+    missing_baseline = np.isnan(baseline_oof)
+    baseline_oof[missing_baseline] = baseline_only[missing_baseline]
+    baseline_rmse = float(np.sqrt(np.mean(np.square(y - baseline_oof))))
+
+    cv_scores = []
+    completed = 0
+    total_candidates = len(lambdas) * len(offense_penalty_ratios)
+    for ratio in offense_penalty_ratios:
+        for candidate in lambdas:
+            score = _cross_validated_rmse(
+                design,
+                y,
+                columns,
+                group_keys,
+                validation_baselines,
+                float(candidate),
+                float(ratio),
+                max_passes,
+                tolerance,
+                group_priors,
+                stat_prior,
+            )
+            cv_scores.append((score, float(candidate), float(ratio)))
+            completed += 1
+            LOG.info(
+                "%s grouped CV %d/%d: lambda=%.5g offense/defense ratio=%.5g "
+                "RMSE=%.4f",
+                name,
+                completed,
+                total_candidates,
+                candidate,
+                ratio,
+                score,
+            )
+    finite_scores = [choice for choice in cv_scores if np.isfinite(choice[0])]
+    if finite_scores:
+        final_cv, alpha, offense_penalty_ratio = min(finite_scores)
+    else:
+        final_cv = float("nan")
+        offense_penalty_ratio = 1.0
+        LOG.warning("%s: grouped CV unavailable; using lambda %.5g", name, alpha)
+    if len(lambdas) > 1 and alpha in {float(min(lambdas)), float(max(lambdas))}:
+        LOG.warning(
+            "%s selected an edge lambda (%.5g); consider widening --lambda-grid",
             name,
-            passes,
             alpha,
-            final_cv,
-            largest_change,
         )
-        partial_residual = y - np.asarray(design @ coefficients).ravel()
-        baseline_target = partial_residual
-        baseline = _baseline_predictions(features, partial_residual, frame, folds, seed + pass_number)
-        prior = next_prior
-        previous_deviation = next_deviation
-        if pass_number > 0 and largest_change < tolerance:
-            break
-    # The coefficients above used the previous baseline/prior; refit once against the
-    # final out-of-fold baseline and the final group targets before reporting.
-    residual = y - baseline - np.asarray(design @ prior).ravel()
-    coefficients, _ = _fit_player_coefficients(
-        design, residual, alpha, prior, counts
+    if len(offense_penalty_ratios) > 1 and offense_penalty_ratio in {
+        min(offense_penalty_ratios),
+        max(offense_penalty_ratios),
+    }:
+        LOG.warning(
+            "%s selected an edge offense penalty ratio (%.5g); consider widening "
+            "--offense-penalty-ratios",
+            name,
+            offense_penalty_ratio,
+        )
+    raw_stat_prior = (
+        np.zeros(len(columns), dtype=float)
+        if stat_prior is None
+        else np.asarray(stat_prior, dtype=float)
     )
-    individually_fit = counts > MIN_INDIVIDUAL_ESTIMATION_PLAYS
-    final_group_means = _group_means(
-        coefficients, counts, group_keys, individually_fit
+    applied_stat_prior = (
+        _center_group_values(raw_stat_prior, counts, group_keys)
+        if group_priors
+        else raw_stat_prior.copy()
     )
-    coefficients[~individually_fit] = final_group_means[~individually_fit]
-    prior[~individually_fit] = final_group_means[~individually_fit]
-    final_validation_baselines = _nested_cv_baselines(
-        features,
-        baseline_target,
-        frame,
-        folds,
-        seed + max_passes * 100,
-        type_means_only=False,
+    joint_deviations, joint_intercept = _ridge_fit(
+        design,
+        y - baseline_only,
+        alpha,
+        fit_intercept=True,
+        column_penalty_factors=np.asarray([
+            offense_penalty_ratio if column[0] == "offense" else 1.0
+            for column in columns
+        ]),
+        prior_mean=applied_stat_prior,
     )
-    full_cv = _cross_validated_rmse(
-        design, y, prior, final_validation_baselines, alpha
+    joint_coefficients = joint_deviations.copy()
+    baseline = baseline_only + joint_intercept
+    LOG.info(
+        "%s pass 1 (joint fit): lambda=%.5g offense/defense penalty ratio=%.5g "
+        "CV RMSE=%.4f largest deviation change=n/a",
+        name,
+        alpha,
+        offense_penalty_ratio,
+        final_cv,
     )
+    if max_passes > 1:
+        coefficients, targets, baseline, alternations, largest_change = _alternate_sides(
+            design,
+            y,
+            baseline,
+            columns,
+            counts,
+            group_keys,
+            alpha,
+            max_passes - 1,
+            tolerance,
+            group_priors,
+            initial_coefficients=joint_coefficients,
+            log_name=name,
+            cv_rmse=final_cv,
+            offense_penalty_ratio=offense_penalty_ratio,
+            stat_prior=stat_prior,
+        )
+    else:
+        coefficients = joint_coefficients
+        targets = np.zeros_like(coefficients)
+        alternations = 0
+        largest_change = float("inf")
+    passes = 1 + alternations
     return FitResult(
         name=name,
         frame=frame,
         columns=columns,
         coefficients=coefficients,
         counts=counts,
-        group_targets=prior,
+        group_targets=targets,
         group_keys=group_keys,
         lambda_value=alpha,
-        cv_rmse=full_cv if np.isfinite(full_cv) else final_cv,
+        cv_rmse=final_cv,
         intercept_rmse=intercept_rmse,
         baseline_rmse=baseline_rmse,
         baseline=baseline,
@@ -1063,12 +1732,68 @@ def fit_model(
         passes=passes,
         largest_change=largest_change,
         bootstrap={},
+        joint_coefficients=joint_coefficients,
+        group_priors_enabled=group_priors,
+        offense_penalty_ratio=offense_penalty_ratio,
+        baseline_features=features.copy(),
+        folds=folds,
+        max_passes=max_passes,
+        tolerance=tolerance,
+        lambda_candidates=tuple(float(value) for value in lambdas),
+        offense_penalty_candidates=tuple(
+            float(value) for value in offense_penalty_ratios
+        ),
+        stat_prior=(
+            raw_stat_prior.copy()
+        ),
+        stat_prior_applied=applied_stat_prior.copy(),
     )
 
 
+def _fit_without_stat_prior(result: FitResult) -> tuple[np.ndarray, np.ndarray]:
+    """Refit coefficients with zero player-specific means, holding fit settings fixed."""
+    if not result.columns:
+        return np.zeros(0, dtype=float), np.zeros(0, dtype=float)
+    target = result.frame["yards"].to_numpy(dtype=float)
+    penalty_factors = np.asarray([
+        result.offense_penalty_ratio if column[0] == "offense" else 1.0
+        for column in result.columns
+    ])
+    coefficients, intercept = _ridge_fit(
+        result.design,
+        target - result.baseline,
+        result.lambda_value,
+        fit_intercept=True,
+        column_penalty_factors=penalty_factors,
+        prior_mean=np.zeros(len(result.columns), dtype=float),
+    )
+    baseline = result.baseline + intercept
+    if result.max_passes > 1:
+        coefficients, targets, _, _, _ = _alternate_sides(
+            result.design,
+            target,
+            baseline,
+            result.columns,
+            result.counts,
+            result.group_keys,
+            result.lambda_value,
+            max_passes=result.max_passes - 1,
+            tolerance=result.tolerance,
+            group_priors=result.group_priors_enabled,
+            initial_coefficients=coefficients,
+            log_name=f"{result.name} no-prior",
+            log_iterations=False,
+            offense_penalty_ratio=result.offense_penalty_ratio,
+            stat_prior=np.zeros(len(result.columns), dtype=float),
+        )
+    else:
+        targets = np.zeros_like(coefficients)
+    return coefficients, targets
+
+
 def _bootstrap_fit(
-    result: FitResult, samples: int, seed: int
-) -> dict[tuple[str, str, str], tuple[float, float]]:
+    result: FitResult, samples: int, seed: int, fixed_penalties: bool = False
+) -> dict[tuple[str, str, str], tuple[float, float, float, float]]:
     if samples <= 0:
         return {}
     rng = np.random.default_rng(seed)
@@ -1077,41 +1802,162 @@ def _bootstrap_fit(
     if len(unique_games) < 2:
         LOG.warning("%s: bootstrap requires multiple games; skipping", result.name)
         return {}
-    estimates: defaultdict[int, list[float]] = defaultdict(list)
-    for _ in range(samples):
+    raw_estimates: defaultdict[int, list[float]] = defaultdict(list)
+    deviation_estimates: defaultdict[int, list[float]] = defaultdict(list)
+    for bootstrap_number in range(samples):
+        LOG.info(
+            "%s bootstrap replicate %d/%d%s",
+            result.name,
+            bootstrap_number + 1,
+            samples,
+            " (fixed penalties)" if fixed_penalties else "",
+        )
         selected = rng.choice(unique_games, size=len(unique_games), replace=True)
         rows = np.concatenate([np.flatnonzero(games == game) for game in selected])
         target = result.frame["yards"].to_numpy(dtype=float)[rows]
         matrix = result.design[rows]
-        baseline = result.baseline[rows]
-        prior = result.group_targets
-        centered = target - baseline - np.asarray(matrix @ prior).ravel()
-        sampled_counts = np.asarray((matrix != 0).sum(axis=0)).ravel().astype(float)
-        full, _ = _fit_player_coefficients(
-            matrix, centered, result.lambda_value, prior, sampled_counts
+        sampled_frame = result.frame.iloc[rows].reset_index(drop=True)
+        sampled_features = (
+            result.baseline_features.iloc[rows].reset_index(drop=True)
+            if result.baseline_features is not None
+            else None
         )
-        means = _group_means(full, sampled_counts, result.group_keys)
-        for index, estimate in enumerate(full - means):
-            estimates[index].append(float(estimate))
+        if sampled_features is None:
+            baseline = result.baseline[rows]
+            initial_coefficients = result.coefficients
+            selected_lambda = result.lambda_value
+            selected_offense_penalty_ratio = result.offense_penalty_ratio
+        else:
+            replicate_seed = seed + bootstrap_number * (result.max_passes + 2)
+            if fixed_penalties:
+                selected_lambda = result.lambda_value
+                selected_offense_penalty_ratio = result.offense_penalty_ratio
+                baseline = _baseline_predictions(
+                    sampled_features,
+                    target,
+                    sampled_frame,
+                    result.folds,
+                    replicate_seed,
+                )
+            else:
+                validation_baselines = _nested_cv_baselines(
+                    sampled_features,
+                    target,
+                    sampled_frame,
+                    result.folds,
+                    replicate_seed,
+                    type_means_only=False,
+                )
+                scores = []
+                for penalty_ratio in result.offense_penalty_candidates:
+                    for candidate in result.lambda_candidates:
+                        score = _cross_validated_rmse(
+                            matrix,
+                            target,
+                            result.columns,
+                            result.group_keys,
+                            validation_baselines,
+                            candidate,
+                            penalty_ratio,
+                            result.max_passes,
+                            result.tolerance,
+                            result.group_priors_enabled,
+                            result.stat_prior,
+                        )
+                        scores.append((score, candidate, penalty_ratio))
+                finite_scores = [score for score in scores if np.isfinite(score[0])]
+                if finite_scores:
+                    _, selected_lambda, selected_offense_penalty_ratio = min(finite_scores)
+                else:
+                    LOG.warning(
+                        "%s bootstrap replicate %d: grouped CV unavailable; "
+                        "retaining full-data penalties",
+                        result.name,
+                        bootstrap_number + 1,
+                    )
+                    selected_lambda = result.lambda_value
+                    selected_offense_penalty_ratio = result.offense_penalty_ratio
+                baseline = np.full(len(target), np.nan, dtype=float)
+                for _, test, _, test_baseline in validation_baselines:
+                    baseline[test] = test_baseline
+                missing_baseline = np.isnan(baseline)
+                if missing_baseline.any():
+                    baseline_fallback = _baseline_predictions(
+                        sampled_features,
+                        target,
+                        sampled_frame,
+                        result.folds,
+                        replicate_seed + result.folds + 1,
+                    )
+                    baseline[missing_baseline] = baseline_fallback[missing_baseline]
+            penalty_factors = np.asarray([
+                selected_offense_penalty_ratio if column[0] == "offense" else 1.0
+                for column in result.columns
+            ])
+            initial_coefficients, intercept = _ridge_fit(
+                matrix,
+                target - baseline,
+                selected_lambda,
+                column_penalty_factors=penalty_factors,
+                prior_mean=(
+                    _center_group_values(
+                        result.stat_prior,
+                        np.asarray((matrix != 0).sum(axis=0)).ravel().astype(float),
+                        result.group_keys,
+                    )
+                    if result.group_priors_enabled
+                    else result.stat_prior
+                ),
+            )
+            baseline = baseline + intercept
+        if result.max_passes > 1:
+            sampled_counts = np.asarray((matrix != 0).sum(axis=0)).ravel().astype(float)
+            full, targets, _, _, _ = _alternate_sides(
+                matrix,
+                target,
+                baseline,
+                result.columns,
+                sampled_counts,
+                result.group_keys,
+                selected_lambda,
+                max_passes=result.max_passes - 1,
+                tolerance=result.tolerance,
+                group_priors=result.group_priors_enabled,
+                initial_coefficients=initial_coefficients,
+                log_name=f"{result.name} bootstrap",
+                log_iterations=False,
+                offense_penalty_ratio=selected_offense_penalty_ratio,
+                stat_prior=result.stat_prior,
+            )
+        else:
+            full = initial_coefficients
+            targets = np.zeros_like(full)
+        for index, estimate in enumerate(full):
+            raw_estimates[index].append(float(estimate))
+            deviation_estimates[index].append(float(estimate - targets[index]))
     return {
-        result.columns[index]: tuple(np.percentile(values, [10, 90]).astype(float))
-        for index, values in estimates.items()
-        if values
+        result.columns[index]: (
+            *np.percentile(raw_values, [10, 90]).astype(float),
+            *np.percentile(deviation_estimates[index], [10, 90]).astype(float),
+        )
+        for index, raw_values in raw_estimates.items()
+        if raw_values and deviation_estimates[index]
     }
 
 
 def _format_outputs(
     result: FitResult, metadata: dict[tuple[str, str, str], dict[str, str]]
 ) -> pd.DataFrame:
-    reporting_means = _group_means(result.coefficients, result.counts, result.group_keys)
     rows: list[dict[str, object]] = []
     for index, (side, role, player_key) in enumerate(result.columns):
         if side == "defense" and role != "on_field":
             continue
         player = metadata[(side, role, player_key)]
         group = player["position_group"]
-        deviation = float(result.coefficients[index] - reporting_means[index])
-        q10, q90 = result.bootstrap.get((side, role, player_key), (np.nan, np.nan))
+        deviation = float(result.coefficients[index] - result.group_targets[index])
+        raw_p10, raw_p90, deviation_p10, deviation_p90 = result.bootstrap.get(
+            (side, role, player_key), (np.nan, np.nan, np.nan, np.nan)
+        )
         rows.append(
             {
                 "player_id": player["player_id"],
@@ -1122,17 +1968,50 @@ def _format_outputs(
                 "role": role,
                 "season": player["season"],
                 "n_plays": int(result.counts[index]),
-                "estimate_status": (
-                    "position_average_frozen"
-                    if result.counts[index] <= MIN_INDIVIDUAL_ESTIMATION_PLAYS
-                    else "individual_estimate"
-                ),
                 "rapm": float(result.coefficients[index]),
                 "rapm_per_100": float(result.coefficients[index] * 100),
                 "rapm_vs_group_avg": deviation,
+                "rapm_with_prior": float(result.coefficients[index]),
+                "rapm_with_prior_per_100": float(result.coefficients[index] * 100),
+                "rapm_with_prior_vs_group_avg": deviation,
+                "rapm_no_prior": float(
+                    result.coefficients_no_prior[index]
+                    if result.coefficients_no_prior is not None
+                    else result.coefficients[index]
+                ),
+                "rapm_no_prior_per_100": float(
+                    (result.coefficients_no_prior[index]
+                     if result.coefficients_no_prior is not None
+                     else result.coefficients[index]) * 100
+                ),
+                "rapm_no_prior_vs_group_avg": float(
+                    result.coefficients_no_prior[index]
+                    - result.group_targets_no_prior[index]
+                    if result.coefficients_no_prior is not None
+                    and result.group_targets_no_prior is not None
+                    else deviation
+                ),
+                "stat_prior_score": float(player.get("stat_prior_score", 0.0)),
+                "stat_prior_raw_yds_per_play": float(
+                    result.stat_prior[index]
+                    if result.stat_prior is not None
+                    else 0.0
+                ),
+                "stat_prior_yds_per_play": float(
+                    result.stat_prior_applied[index]
+                    if result.stat_prior_applied is not None
+                    else 0.0
+                ),
+                "stat_prior_years": int(player.get("stat_prior_years", 0)),
+                "stat_prior_metrics": int(player.get("stat_prior_metrics", 0)),
+                "lambda_defense": result.lambda_value,
+                "lambda_offense": result.lambda_value * result.offense_penalty_ratio,
+                "offense_penalty_ratio": result.offense_penalty_ratio,
                 "rank_in_group": np.nan,
-                "p10": q10,
-                "p90": q90,
+                "rapm_p10": raw_p10,
+                "rapm_p90": raw_p90,
+                "rapm_vs_group_avg_p10": deviation_p10,
+                "rapm_vs_group_avg_p90": deviation_p90,
                 "_player_key": player_key,
             }
         )
@@ -1195,18 +2074,26 @@ def _add_play_type_components(
         if key not in output:
             output[key] = pd.Series(dtype="string")
     for play_type, component in (("rush", rush), ("pass", passing)):
-        component_columns = keys + ["rapm", "rapm_per_100", "n_plays"]
-        if component.empty:
-            selected = pd.DataFrame(columns=component_columns)
+        aliases = {
+            "rapm": f"{play_type}_rapm",
+            "rapm_per_100": f"{play_type}_rapm_per_100",
+            "rapm_no_prior": f"{play_type}_rapm_no_prior",
+            "rapm_no_prior_per_100": f"{play_type}_rapm_no_prior_per_100",
+            "n_plays": f"{play_type}_n_plays",
+        }
+        source_columns = keys + ["rapm", "rapm_per_100", "n_plays"]
+        if {"rapm_no_prior", "rapm_no_prior_per_100"}.issubset(component.columns):
+            source_columns.extend(["rapm_no_prior", "rapm_no_prior_per_100"])
         else:
-            selected = component[component_columns]
-        renamed = selected.rename(
-            columns={
-                "rapm": f"{play_type}_rapm",
-                "rapm_per_100": f"{play_type}_rapm_per_100",
-                "n_plays": f"{play_type}_n_plays",
-            }
-        )
+            component = component.copy()
+            component["rapm_no_prior"] = component["rapm"]
+            component["rapm_no_prior_per_100"] = component["rapm_per_100"]
+            source_columns.extend(["rapm_no_prior", "rapm_no_prior_per_100"])
+        if component.empty:
+            selected = pd.DataFrame(columns=source_columns)
+        else:
+            selected = component[source_columns]
+        renamed = selected.rename(columns=aliases)
         output = output.merge(renamed, on=keys, how="left", validate="one_to_one")
     return output
 
@@ -1241,9 +2128,16 @@ def _make_qb_view(
         run_count = int(rush_row.n_plays) if rush_row else 0
         pass_deviation = float(pass_row.rapm_vs_group_avg) if pass_row else 0.0
         run_deviation = float(rush_row.rapm_vs_group_avg) if rush_row else 0.0
+        pass_no_prior = float(pass_row.rapm_no_prior_vs_group_avg) if pass_row else 0.0
+        run_no_prior = float(rush_row.rapm_no_prior_vs_group_avg) if rush_row else 0.0
         total = pass_count + run_count
         combined = (
             (pass_deviation * pass_count + run_deviation * run_count) / total if total else np.nan
+        )
+        combined_no_prior = (
+            (pass_no_prior * pass_count + run_no_prior * run_count) / total
+            if total
+            else np.nan
         )
         output.append(
             {
@@ -1251,44 +2145,50 @@ def _make_qb_view(
                 "player_name": player["player_name"],
                 "season": season,
                 "pass_rapm": float(pass_row.rapm) if pass_row else np.nan,
+                "pass_rapm_no_prior": float(pass_row.rapm_no_prior) if pass_row else np.nan,
                 "n_pass_plays": pass_count,
                 "qb_run_rapm": float(rush_row.rapm) if rush_row else np.nan,
+                "qb_run_rapm_no_prior": float(rush_row.rapm_no_prior) if rush_row else np.nan,
                 "n_qb_runs": run_count,
                 "combined_qb_rapm": combined,
+                "combined_qb_rapm_no_prior": combined_no_prior,
             }
         )
     return pd.DataFrame(output)
 
 
 def _print_leaderboards(outputs: dict[str, pd.DataFrame], min_plays: int, min_carries: int) -> None:
-    pooled = outputs["rapm_all_plays"]
-    if pooled.empty:
-        return
-    for (side, role, group), subset in pooled.groupby(["side", "role", "position_group"]):
-        threshold = min_carries if role == "ball_carrier" else min_plays
-        qualified = subset[subset["n_plays"] >= threshold].sort_values(
-            "rapm_vs_group_avg", ascending=False
-        )
-        if qualified.empty:
+    for fit_name, table in outputs.items():
+        if table.empty:
             continue
-        LOG.info(
-            "\n%s %s %s leaderboard (minimum %d plays)",
-            side.upper(),
-            role,
-            group,
-            threshold,
-        )
-        print(
-            qualified.head(15)[
-                ["player_name", "player_id", "team", "n_plays", "rapm_vs_group_avg"]
-            ].to_string(index=False)
-        )
-        LOG.info("%s %s %s bottom 15", side.upper(), role, group)
-        print(
-            qualified.tail(15).sort_values("rapm_vs_group_avg")[
-                ["player_name", "player_id", "team", "n_plays", "rapm_vs_group_avg"]
-            ].to_string(index=False)
-        )
+        for (side, role, group), subset in table.groupby(
+            ["side", "role", "position_group"]
+        ):
+            threshold = min_carries if role == "ball_carrier" else min_plays
+            qualified = subset[subset["n_plays"] >= threshold].sort_values(
+                "rapm_vs_group_avg", ascending=False
+            )
+            if qualified.empty:
+                continue
+            LOG.info(
+                "\n%s | %s %s %s leaderboard (minimum %d plays)",
+                fit_name,
+                side.upper(),
+                role,
+                group,
+                threshold,
+            )
+            print(
+                qualified.head(15)[
+                    ["player_name", "player_id", "team", "n_plays", "rapm_vs_group_avg"]
+                ].to_string(index=False)
+            )
+            LOG.info("%s | %s %s %s bottom 15", fit_name, side.upper(), role, group)
+            print(
+                qualified.tail(15).sort_values("rapm_vs_group_avg")[
+                    ["player_name", "player_id", "team", "n_plays", "rapm_vs_group_avg"]
+                ].to_string(index=False)
+            )
 
 
 def _split_half_reliability(
@@ -1306,13 +2206,24 @@ def _split_half_reliability(
         rows = np.flatnonzero(result.frame["game_id"].astype(str).isin(half).to_numpy())
         matrix = result.design[rows]
         y = result.frame["yards"].to_numpy(dtype=float)[rows]
-        centered = y - result.baseline[rows] - np.asarray(matrix @ result.group_targets).ravel()
         counts = np.asarray((matrix != 0).sum(axis=0)).ravel().astype(float)
-        coefficients, _ = _fit_player_coefficients(
-            matrix, centered, result.lambda_value, result.group_targets, counts
+        coefficients, targets, _, _, _ = _alternate_sides(
+            matrix,
+            y,
+            result.baseline[rows],
+            result.columns,
+            counts,
+            result.group_keys,
+            result.lambda_value,
+            max_passes=max(0, result.max_passes - 1),
+            tolerance=result.tolerance,
+            group_priors=result.group_priors_enabled,
+            log_name=f"{result.name} split-half",
+            log_iterations=False,
+            offense_penalty_ratio=result.offense_penalty_ratio,
+            stat_prior=result.stat_prior,
         )
-        means = _group_means(coefficients, counts, result.group_keys)
-        deviations.append(coefficients - means)
+        deviations.append(coefficients - targets)
         counts_by_half.append(counts)
     reliability: dict[tuple[str, str, str], float] = {}
     groups = sorted(set(result.group_keys))
@@ -1340,6 +2251,18 @@ def _write_diagnostics(
         f"Rows after de-duplication: {len(data):,}",
         f"Games: {data['game_id'].nunique():,}",
         f"Seasons: {', '.join(sorted(data['season'].dropna().astype(str).unique()))}",
+        "Teams: "
+        + ", ".join(
+            sorted(
+                {
+                    str(team).strip()
+                    for column in ("team", "posteam", "opponent")
+                    if column in data
+                    for team in data[column].dropna().unique()
+                    if str(team).strip()
+                }
+            )
+        ),
         "Drop counts: " + ", ".join(f"{key}={value:,}" for key, value in dropped.items()),
         "Starting/ending yardage absolute-distance mismatch rate (1-yard tolerance): "
         + (f"{yardage_mismatch_rate:.4%}" if np.isfinite(yardage_mismatch_rate) else "unavailable"),
@@ -1352,24 +2275,37 @@ def _write_diagnostics(
                 f"Plays: {len(result.frame):,}",
                 f"Distinct player IDs: {len({column[2] for column in result.columns}):,}",
                 f"Players/columns: {len(result.columns):,}",
-                "Position-average frozen variables (<= 200 plays): "
-                f"{int(np.count_nonzero(result.counts <= MIN_INDIVIDUAL_ESTIMATION_PLAYS)):,}",
                 f"Chosen lambda: {result.lambda_value:g}",
+                f"Offense/defense penalty ratio: {result.offense_penalty_ratio:g}",
                 f"CV RMSE (intercept-only): {result.intercept_rmse:.6f}",
                 f"CV RMSE (baseline-only): {result.baseline_rmse:.6f}",
-                f"CV RMSE (full model): {result.cv_rmse:.6f}",
+                f"CV RMSE (full pipeline, grouped folds): {result.cv_rmse:.6f}",
                 f"Passes: {result.passes}",
                 f"Largest within-group deviation change: {result.largest_change:.8f}",
+                "Stat-prior variables with nonzero applied prior: "
+                f"{int(np.count_nonzero(result.stat_prior_applied)) if result.stat_prior_applied is not None else 0:,}",
             ]
         )
-        group_stats: defaultdict[tuple[str, str, str], list[float]] = defaultdict(list)
-        for coefficient, count, group in zip(
-            result.coefficients, result.counts, result.group_keys
+        if result.stat_prior_applied is not None and len(result.stat_prior_applied):
+            lines.append(
+                "Applied stat-prior yards/play range: "
+                f"{float(np.min(result.stat_prior_applied)):.6f} to "
+                f"{float(np.max(result.stat_prior_applied)):.6f}"
+            )
+        coefficient_stats: defaultdict[tuple[str, str, str], list[float]] = defaultdict(list)
+        deviation_stats: defaultdict[tuple[str, str, str], list[float]] = defaultdict(list)
+        for coefficient, group_target, group in zip(
+            result.coefficients, result.group_targets, result.group_keys
         ):
-            if count > MIN_INDIVIDUAL_ESTIMATION_PLAYS:
-                group_stats[group].append(float(coefficient))
-        lines.append("Individually estimated coefficient mean and SD by group:")
-        for group, values in sorted(group_stats.items()):
+            coefficient_stats[group].append(float(coefficient))
+            deviation_stats[group].append(float(coefficient - group_target))
+        lines.append("Coefficient mean and SD by group:")
+        for group, values in sorted(coefficient_stats.items()):
+            lines.append(
+                f"  {group}: mean={np.mean(values):.6f}, sd={np.std(values):.6f}, n={len(values)}"
+            )
+        lines.append("Within-group deviation mean and SD:")
+        for group, values in sorted(deviation_stats.items()):
             lines.append(
                 f"  {group}: mean={np.mean(values):.6f}, sd={np.std(values):.6f}, n={len(values)}"
             )
@@ -1378,6 +2314,37 @@ def _write_diagnostics(
             f"  {group}: {value:.6f}" for group, value in sorted(reliability[result.name].items())
         )
     (outdir / "diagnostics.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _play_expectations(result: FitResult) -> pd.DataFrame:
+    """Return side-specific expectations and residuals for each modeled play."""
+    sides = np.asarray([column[0] for column in result.columns])
+    offense_columns = np.flatnonzero(sides == "offense")
+    defense_columns = np.flatnonzero(sides == "defense")
+    offense_contribution = np.asarray(
+        result.design[:, offense_columns] @ result.coefficients[offense_columns]
+    ).ravel()
+    defense_contribution = np.asarray(
+        result.design[:, defense_columns] @ result.coefficients[defense_columns]
+    ).ravel()
+    actual = result.frame["yards"].to_numpy(dtype=float)
+    output = pd.DataFrame(
+        {
+            "fit": result.name,
+            "game_id": result.frame["game_id"].astype(str),
+            "play_id": result.frame["play_id"].astype(str),
+            "play_type": result.frame["play_type"].astype(str),
+            "actual_yards_gained": result.frame["raw_yards"].to_numpy(dtype=float),
+            "normalized_yards": actual,
+            "offense_expectation": result.baseline + defense_contribution,
+            "defense_expectation": result.baseline + offense_contribution,
+            "offense_residual": actual - result.baseline - defense_contribution,
+            "defense_residual": result.baseline
+            + offense_contribution
+            - actual,
+        }
+    )
+    return output
 
 
 def run_analysis(args: argparse.Namespace) -> None:
@@ -1394,9 +2361,7 @@ def run_analysis(args: argparse.Namespace) -> None:
         else {}
     )
     score_running = _score_is_running(data)
-    cleaned, dropped, yardage_mismatch_rate = clean_plays(
-        data, args.cap, args.shrink, score_running
-    )
+    cleaned, dropped, yardage_mismatch_rate = clean_plays(data, args.cap, score_running)
     if args.by_season and cleaned["season"].eq("").all():
         raise ValueError("--by-season requires a season column or derivable season in game_id")
     offense_global, offense_season = _load_offense_positions(args.positions)
@@ -1407,6 +2372,33 @@ def run_analysis(args: argparse.Namespace) -> None:
         offense_season,
         nflreadpy_positions,
     )
+    observed_seasons = {
+        int(value)
+        for value in pd.to_numeric(cleaned["season"], errors="coerce").dropna().unique()
+        if int(value) >= 1999
+    }
+    modeled_seasons = (
+        observed_seasons
+        if args.by_season
+        else ({min(observed_seasons)} if observed_seasons else set())
+    )
+    prior_seasons = {
+        year
+        for season in modeled_seasons
+        for year in range(max(1999, season - STAT_PRIOR_LOOKBACK), season)
+    }
+    historical_stats = (
+        _load_nflreadpy_player_stats(prior_seasons)
+        if not args.no_stat_priors and prior_seasons
+        else pd.DataFrame()
+    )
+    if not args.no_stat_priors and prior_seasons and historical_stats.empty:
+        raise ValueError(
+            "nflreadpy returned no historical player stats for the prior window; "
+            "check data availability or pass --no-stat-priors"
+        )
+    if not args.no_stat_priors and not prior_seasons:
+        LOG.warning("No derivable modeled season; statistical priors will be zero")
     lambda_grid = args.lambda_grid
     if not lambda_grid or any(value <= 0 for value in lambda_grid):
         raise ValueError("--lambda-grid must contain positive values")
@@ -1424,6 +2416,7 @@ def run_analysis(args: argparse.Namespace) -> None:
             result = FitResult(
                 name, frame, [], np.zeros(0), np.zeros(0), np.zeros(0), [], float(lambda_grid[0]),
                 float("nan"), float("nan"), float("nan"), np.zeros(0), design, 0, 0.0, {},
+                np.zeros(0), not args.no_group_priors,
             )
         else:
             design, columns, groups, counts, fit_metadata = _make_design(
@@ -1435,6 +2428,34 @@ def run_analysis(args: argparse.Namespace) -> None:
                 names,
             )
             metadata.update(fit_metadata)
+            frame_seasons = {
+                int(value)
+                for value in pd.to_numeric(frame["season"], errors="coerce").dropna().unique()
+                if int(value) >= 1999
+            }
+            prior, prior_details = _make_stat_prior_vector(
+                columns,
+                fit_metadata,
+                historical_stats,
+                frame_seasons if args.by_season else modeled_seasons,
+                args.by_season,
+                args.stat_prior_decay,
+                args.stat_prior_scale,
+            )
+            for column, details in prior_details.items():
+                fit_metadata[column].update(details)
+            LOG.info(
+                "%s: statistical priors populated for %d/%d player variables",
+                name,
+                len(prior_details),
+                len(columns),
+            )
+            if not args.no_stat_priors and not prior_details:
+                LOG.warning(
+                    "%s: no applicable position/stat priors were available; "
+                    "player prior means are zero",
+                    name,
+                )
             features = _baseline_features(frame, args.scheme_controls)
             result = fit_model(
                 name,
@@ -1450,8 +2471,18 @@ def run_analysis(args: argparse.Namespace) -> None:
                 args.tol,
                 not args.no_group_priors,
                 args.seed,
+                args.offense_penalty_ratios,
+                stat_prior=prior,
             )
-            result.bootstrap = _bootstrap_fit(result, args.bootstrap, args.seed + 100)
+            result.coefficients_no_prior, result.group_targets_no_prior = (
+                _fit_without_stat_prior(result)
+            )
+            result.bootstrap = _bootstrap_fit(
+                result,
+                args.bootstrap,
+                args.seed + 100,
+                fixed_penalties=args.bootstrap_fixed_penalties,
+            )
         results.append(result)
     result_by_name = {result.name: result for result in results}
     outdir = Path(args.outdir)
@@ -1481,10 +2512,23 @@ def run_analysis(args: argparse.Namespace) -> None:
         columns.extend(
             [
                 "n_plays",
-                "estimate_status",
                 "rapm",
                 "rapm_per_100",
                 "rapm_vs_group_avg",
+                "rapm_with_prior",
+                "rapm_with_prior_per_100",
+                "rapm_with_prior_vs_group_avg",
+                "rapm_no_prior",
+                "rapm_no_prior_per_100",
+                "rapm_no_prior_vs_group_avg",
+                "stat_prior_score",
+                "stat_prior_raw_yds_per_play",
+                "stat_prior_yds_per_play",
+                "stat_prior_years",
+                "stat_prior_metrics",
+                "lambda_defense",
+                "lambda_offense",
+                "offense_penalty_ratio",
                 "rank_in_group",
             ]
         )
@@ -1493,19 +2537,34 @@ def run_analysis(args: argparse.Namespace) -> None:
                 [
                     "rush_rapm",
                     "rush_rapm_per_100",
+                    "rush_rapm_no_prior",
+                    "rush_rapm_no_prior_per_100",
                     "rush_n_plays",
                     "pass_rapm",
                     "pass_rapm_per_100",
+                    "pass_rapm_no_prior",
+                    "pass_rapm_no_prior_per_100",
                     "pass_n_plays",
                 ]
             )
         if args.bootstrap > 0:
-            columns.extend(["p10", "p90"])
+            columns.extend([
+                "rapm_p10",
+                "rapm_p90",
+                "rapm_vs_group_avg_p10",
+                "rapm_vs_group_avg_p90",
+            ])
         for column in columns:
             if column not in output:
                 output[column] = pd.Series(dtype=float)
         output[columns].to_csv(outdir / f"{name}.csv", index=False)
         outputs[name] = output
+    if args.export_expectations:
+        expectations = pd.concat(
+            [_play_expectations(result) for result in results if not result.frame.empty],
+            ignore_index=True,
+        )
+        expectations.to_csv(outdir / "play_expectations.csv", index=False)
     qb_view = _make_qb_view(
         result_by_name["rapm_pass"],
         result_by_name["rapm_rush"],
@@ -1518,10 +2577,13 @@ def run_analysis(args: argparse.Namespace) -> None:
         "player_name",
         *(["season"] if args.by_season else []),
         "pass_rapm",
+        "pass_rapm_no_prior",
         "n_pass_plays",
         "qb_run_rapm",
+        "qb_run_rapm_no_prior",
         "n_qb_runs",
         "combined_qb_rapm",
+        "combined_qb_rapm_no_prior",
     ]
     for column in qb_columns:
         if column not in qb_view:
@@ -1542,120 +2604,49 @@ def run_analysis(args: argparse.Namespace) -> None:
 
 def _run_selftest() -> None:
     """Exercise normalization, sign recovery, and deterministic seeded fitting."""
-    expected = {10: 10, 15: 15, 23: 17, 55: 25, -18: -15.75, -40: -21.25}
-    for value, result in expected.items():
-        assert normalize_yards(value) == result, (value, normalize_yards(value), result)
-    offense_positions, season_positions, defense_positions = _make_position_maps(
-        {"defender": "UNK", "known": "UNK"},
-        {"known": "UNK"},
-        {"known": "WR", "explicit": "TE"},
-        {("2025", "explicit"): "UNK"},
-        {"known": "RB", "defender": "LB", "special": "K"},
-    )
-    assert offense_positions["known"] == "WR"
-    assert defense_positions["known"] == "RB"
-    assert defense_positions["defender"] == "LB"
-    assert _player_position(
-        "explicit", "2025", "offense", offense_positions, season_positions, defense_positions
-    ) == "TE"
-    assert _position_group("RB") == "RB"
-    assert _position_group("K") == "SPEC"
-    assert _position_group("UNK") == "UNK"
-    pooled = pd.DataFrame(
-        [
-            {"player_id": "p1", "side": "offense", "role": "on_field"},
-            {"player_id": "p2", "side": "defense", "role": "on_field"},
-        ]
-    )
-    rush = pd.DataFrame(
-        [
-            {
-                "player_id": "p1",
-                "side": "offense",
-                "role": "on_field",
-                "season": "",
-                "rapm": 0.2,
-                "rapm_per_100": 20.0,
-                "n_plays": 12,
-            }
-        ]
-    )
-    passing = pd.DataFrame(
+    default_args = build_parser().parse_args(["--input", "plays.csv"])
+    assert default_args.tol == 0.001
+    assert np.isclose(default_args.lambda_grid[-1], 750.0)
+    assert len(default_args.lambda_grid) == 5
+    assert max(default_args.lambda_grid) <= 750.0
+    assert not default_args.bootstrap_fixed_penalties
+    assert not default_args.no_stat_priors
+    assert default_args.stat_prior_decay == DEFAULT_STAT_PRIOR_DECAY
+    assert default_args.stat_prior_scale == DEFAULT_STAT_PRIOR_SCALE
+    assert build_parser().parse_args(
+        ["--input", "plays.csv", "--bootstrap-fixed-penalties"]
+    ).bootstrap_fixed_penalties
+    assert _low_leverage_band(1801) is None
+    assert _low_leverage_band(1800) == ("30:00-15:00", 21)
+    assert _low_leverage_band(900) == ("30:00-15:00", 21)
+    assert _low_leverage_band(899) == ("15:00-10:00", 17)
+    assert _low_leverage_band(600) == ("15:00-10:00", 17)
+    assert _low_leverage_band(599) == ("10:00-5:00", 14)
+    assert _low_leverage_band(300) == ("10:00-5:00", 14)
+    assert _low_leverage_band(299) == ("5:00-3:00", 10)
+    assert _low_leverage_band(180) == ("5:00-3:00", 10)
+    assert _low_leverage_band(179) == ("3:00-0:00", 9)
+    assert build_parser().parse_args(["--input", "plays.csv"]).offense_penalty_ratios == [
+        0.5, 1.0, 2.0
+    ]
+    leverage_rows = pd.DataFrame(
         [
             {
-                "player_id": "p1",
-                "side": "offense",
-                "role": "on_field",
-                "season": "",
-                "rapm": 0.3,
-                "rapm_per_100": 30.0,
-                "n_plays": 34,
-            }
+                "game_id": "2024_01_H_A", "play_id": "1", "play_type": "pass",
+                "qtr": "4", "time_on_clock_start": "02:59",
+                "home_team_score": "21", "away_team_score": "0",
+            },
+            {
+                "game_id": "2024_01_H_A", "play_id": "2", "play_type": "run",
+                "qtr": "4", "time_on_clock_start": "02:50",
+                "home_team_score": "21", "away_team_score": "0",
+            },
         ]
     )
-    components = _add_play_type_components(pooled, rush, passing, by_season=False)
-    assert components.loc[0, "rush_rapm"] == 0.2
-    assert components.loc[0, "pass_rapm"] == 0.3
-    assert pd.isna(components.loc[1, "rush_rapm"])
-    assert components.loc[1, "side"] == "defense"
-    seasonal_pooled = pd.concat(
-        [pooled.iloc[[0]].assign(season="2023"), pooled.iloc[[0]].assign(season="2024")],
-        ignore_index=True,
-    )
-    seasonal_rush = pd.concat(
-        [
-            rush.assign(season="2023"),
-            rush.assign(season="2024", rapm=0.4, rapm_per_100=40.0),
-        ],
-        ignore_index=True,
-    )
-    seasonal_components = _add_play_type_components(
-        seasonal_pooled, seasonal_rush, passing.assign(season="2024"), by_season=True
-    )
-    assert seasonal_components["rush_rapm"].tolist() == [0.2, 0.4]
-    assert pd.isna(seasonal_components.loc[0, "pass_rapm"])
-    assert seasonal_components.loc[1, "pass_rapm"] == 0.3
-    low_sample_design = sparse.csr_matrix(
-        np.column_stack(
-            (
-                np.ones(201),
-                np.r_[np.ones(200), 0.0],
-            )
-        )
-    )
-    low_sample_counts = np.asarray((low_sample_design != 0).sum(axis=0)).ravel()
-    assert low_sample_counts.tolist() == [201.0, 200.0]
-    fitted, _ = _fit_player_coefficients(
-        low_sample_design,
-        np.r_[np.full(200, 8.0), 3.0],
-        1.0,
-        np.zeros(2),
-        low_sample_counts,
-    )
-    next_targets = _next_group_targets(
-        fitted,
-        low_sample_counts,
-        [("offense", "on_field", "WR"), ("offense", "on_field", "WR")],
-        group_priors=True,
-    )
-    assert fitted[1] == 0.0
-    assert next_targets[1] == fitted[0]
-    unpooled_targets = _next_group_targets(
-        fitted,
-        low_sample_counts,
-        [("offense", "on_field", "WR"), ("offense", "on_field", "WR")],
-        group_priors=False,
-    )
-    assert unpooled_targets[0] == 0.0
-    assert unpooled_targets[1] == fitted[0]
-    frozen, _ = _fit_player_coefficients(
-        low_sample_design,
-        np.r_[np.full(200, 8.0), 3.0],
-        1.0,
-        next_targets,
-        low_sample_counts,
-    )
-    assert frozen[1] == next_targets[1]
+    leverage_excluded, leverage_bands, leverage_missing = _low_leverage_filter(leverage_rows)
+    assert leverage_excluded.tolist() == [False, True]
+    assert leverage_bands == {"3:00-0:00": 1}
+    assert leverage_missing == 0
     possession_rows = pd.DataFrame(
         {
             "game_id": ["2025_01_HOM_AWY", "2025_01_HOM_AWY"],
@@ -1672,6 +2663,144 @@ def _run_selftest() -> None:
     assert _score_differential(possession_rows).tolist() == [7.0, -7.0]
     spread_features = _baseline_features(possession_rows, scheme_controls=False)
     assert spread_features["offense_spread"].tolist() == [3.5, -3.5]
+    missing_leverage_row = pd.DataFrame(
+        [
+            {
+                "game_id": "2024_01_H_A",
+                "play_id": "3",
+                "play_type": pd.NA,
+                "qtr": pd.NA,
+                "time_on_clock_start": pd.NA,
+                "home_team_score": pd.NA,
+                "away_team_score": pd.NA,
+            }
+        ]
+    )
+    missing_excluded, _, missing_count = _low_leverage_filter(missing_leverage_row)
+    assert missing_excluded.tolist() == [False]
+    assert missing_count == 0
+
+    expected = {10: 10, 15: 15, 23: 15, 55: 15, -18: -15, -40: -15}
+    for value, result in expected.items():
+        assert normalize_yards(value) == result, (value, normalize_yards(value), result)
+    prior_stats = pd.DataFrame(
+        [
+            {
+                "player_id": player_id,
+                "position": "QB",
+                "season": season,
+                "games": 16,
+                "passing_yards": yards,
+                "passing_tds": tds,
+                "passing_interceptions": interceptions,
+                "sacks_suffered": sacks,
+                "rushing_yards": 100,
+                "carries": 20,
+            }
+            for season in (2023, 2024)
+            for player_id, yards, tds, interceptions, sacks in (
+                ("qb_good", 4500, 35, 5, 20),
+                ("qb_mid", 3000, 20, 10, 35),
+                ("qb_low", 1500, 8, 18, 50),
+            )
+        ]
+    )
+    prior_columns = [
+        ("offense", "on_field", player_id)
+        for player_id in ("qb_good", "qb_mid", "qb_missing")
+    ]
+    prior_metadata = {
+        column: {
+            "player_id": column[2],
+            "position": "QB",
+            "position_group": "QB",
+            "season": "",
+        }
+        for column in prior_columns
+    }
+    prior_values, prior_details = _make_stat_prior_vector(
+        prior_columns,
+        prior_metadata,
+        prior_stats,
+        {2025},
+        by_season=False,
+        decay=DEFAULT_STAT_PRIOR_DECAY,
+        scale=DEFAULT_STAT_PRIOR_SCALE,
+    )
+    assert prior_values[0] > prior_values[1] > prior_values[2]
+    assert np.max(np.abs(prior_values)) <= STAT_PRIOR_MAX_ABS
+    assert prior_details[prior_columns[2]]["stat_prior_years"] == 2
+    defense_stats = pd.DataFrame(
+        [
+            {
+                "player_id": player_id,
+                "position": "LB",
+                "season": season,
+                "games": 16,
+                "def_tackles_solo": tackles,
+                "def_tackles_with_assist": assists,
+                "def_tackles_for_loss": tackles_for_loss,
+                "def_sacks": sacks,
+                "def_interceptions": interceptions,
+                "def_pass_defended": passes_defended,
+            }
+            for season in (2023, 2024)
+            for player_id, tackles, assists, tackles_for_loss, sacks, interceptions, passes_defended in (
+                ("lb_good", 80, 40, 10, 5, 3, 8),
+                ("lb_low", 20, 10, 2, 0, 0, 1),
+            )
+        ]
+    )
+    defense_columns = [
+        ("defense", "on_field", player_id) for player_id in ("lb_good", "lb_missing")
+    ]
+    defense_metadata = {
+        column: {
+            "player_id": column[2],
+            "position": "LB",
+            "position_group": "LB",
+            "season": "",
+        }
+        for column in defense_columns
+    }
+    defense_prior, _ = _make_stat_prior_vector(
+        defense_columns,
+        defense_metadata,
+        defense_stats,
+        {2025},
+        by_season=False,
+        decay=DEFAULT_STAT_PRIOR_DECAY,
+        scale=DEFAULT_STAT_PRIOR_SCALE,
+    )
+    assert defense_prior[0] > defense_prior[1]
+    assert _stat_prior_family("FB") == "RB"
+    assert _stat_prior_family("LS") == "OL"
+    prior_fit, _ = _ridge_fit(
+        sparse.eye(2, format="csr"),
+        np.zeros(2),
+        alpha=100.0,
+        fit_intercept=False,
+        prior_mean=np.asarray([0.1, -0.1]),
+    )
+    assert prior_fit[0] > 0 and prior_fit[1] < 0
+    assert np.all(np.abs(prior_fit) < 0.1)
+    offense, season_positions, defense = _make_position_maps(
+        {"known": "UNK"},
+        {"known": "UNK"},
+        {"known": "UNK"},
+        {("2024", "known"): "UNK"},
+        {"known": "RB"},
+    )
+    assert (
+        _player_position("known", "2024", "offense", offense, season_positions, defense)
+        == "RB"
+    )
+    assert (
+        _player_position("known", "2024", "defense", offense, season_positions, defense)
+        == "RB"
+    )
+    assert _position_group("RB") == "RB"
+    assert _position_group("UNK") == "UNK"
     rusher_frame = pd.DataFrame(
         [
             {
@@ -1695,6 +2824,66 @@ def _run_selftest() -> None:
     rusher_column = ("offense", "ball_carrier", "runner")
     assert rusher_column in rusher_columns
     assert rusher_metadata[rusher_column]["player_name"] == "Rusher Display Name"
+    pooled = pd.DataFrame(
+        [
+            {"player_id": "p1", "side": "offense", "role": "on_field", "season": ""},
+            {"player_id": "p1", "side": "defense", "role": "on_field", "season": ""},
+        ]
+    )
+    rush = pd.DataFrame(
+        [
+            {
+                "player_id": "p1",
+                "side": "offense",
+                "role": "on_field",
+                "season": "",
+                "rapm": 0.2,
+                "rapm_per_100": 20.0,
+                "rapm_no_prior": 0.15,
+                "rapm_no_prior_per_100": 15.0,
+                "n_plays": 12,
+            }
+        ]
+    )
+    passing = pd.DataFrame(
+        [
+            {
+                "player_id": "p1",
+                "side": "offense",
+                "role": "on_field",
+                "season": "",
+                "rapm": 0.3,
+                "rapm_per_100": 30.0,
+                "rapm_no_prior": 0.25,
+                "rapm_no_prior_per_100": 25.0,
+                "n_plays": 34,
+            }
+        ]
+    )
+    components = _add_play_type_components(pooled, rush, passing, by_season=False)
+    assert components.loc[0, "rush_rapm"] == 0.2
+    assert components.loc[0, "pass_rapm"] == 0.3
+    assert components.loc[0, "rush_rapm_no_prior"] == 0.15
+    assert components.loc[0, "pass_rapm_no_prior"] == 0.25
+    assert pd.isna(components.loc[1, "rush_rapm"])
+    assert components.loc[1, "side"] == "defense"
+    seasonal_pooled = pd.concat(
+        [pooled.iloc[[0]].assign(season="2023"), pooled.iloc[[0]].assign(season="2024")],
+        ignore_index=True,
+    )
+    seasonal_rush = pd.concat(
+        [
+            rush.assign(season="2023"),
+            rush.assign(season="2024", rapm=0.4, rapm_per_100=40.0),
+        ],
+        ignore_index=True,
+    )
+    seasonal_components = _add_play_type_components(
+        seasonal_pooled, seasonal_rush, passing.assign(season="2024"), by_season=True
+    )
+    assert seasonal_components["rush_rapm"].tolist() == [0.2, 0.4]
+    assert pd.isna(seasonal_components.loc[0, "pass_rapm"])
+    assert seasonal_components.loc[1, "pass_rapm"] == 0.3
     seed = 731
     rng = np.random.default_rng(seed)
     n_games, plays_per_game, n_teams = 60, 500, 24
@@ -1789,6 +2978,7 @@ def _run_selftest() -> None:
             {player_id: player_id for player_id in (*offense_positions, *defense_positions)},
         )
         features = pd.DataFrame({"situation": model_frame["situation"]})
+        synthetic_stat_prior = np.linspace(-0.02, 0.02, len(columns))
         result = fit_model(
             model_name,
             model_frame,
@@ -1803,6 +2993,11 @@ def _run_selftest() -> None:
             tolerance=0.005,
             group_priors=True,
             seed=seed,
+            offense_penalty_ratios=(1.0,),
+            stat_prior=synthetic_stat_prior,
+        )
+        result.coefficients_no_prior, result.group_targets_no_prior = (
+            _fit_without_stat_prior(result)
         )
         estimates = {
             (column[1], metadata[column]["player_id"]): result.coefficients[i]
@@ -1836,6 +3031,16 @@ def _run_selftest() -> None:
             assert defense_corr > 0.5, f"defense sign/recovery correlation too low: {defense_corr:.3f}"
         results_by_kind[model_name] = result
     pooled = results_by_kind["all"]
+    assert pooled.stat_prior is not None and np.any(pooled.stat_prior)
+    assert pooled.stat_prior_applied is not None
+    for group in set(pooled.group_keys):
+        indices = np.asarray(
+            [index for index, key in enumerate(pooled.group_keys) if key == group]
+        )
+        weighted_prior = float(
+            np.sum(pooled.stat_prior_applied[indices] * pooled.counts[indices])
+        )
+        assert abs(weighted_prior) < 1e-8, f"prior was not centered for {group}"
     design, columns, groups, counts, _ = _make_design(
         pooled.frame,
         False,
@@ -1858,10 +3063,103 @@ def _run_selftest() -> None:
         tolerance=0.005,
         group_priors=True,
         seed=seed,
+        offense_penalty_ratios=(1.0,),
+        stat_prior=pooled.stat_prior,
+    )
+    repeat.coefficients_no_prior, repeat.group_targets_no_prior = (
+        _fit_without_stat_prior(repeat)
     )
     assert np.array_equal(pooled.coefficients, repeat.coefficients), "fixed-seed fit did not reproduce"
+    penalty_design = sparse.eye(2, format="csr")
+    penalty_coefficients, _ = _ridge_fit(
+        penalty_design,
+        np.ones(2),
+        alpha=2.0,
+        fit_intercept=False,
+        column_penalty_factors=np.asarray([0.5, 1.0]),
+    )
+    assert penalty_coefficients[0] > penalty_coefficients[1], (
+        "weaker offense penalty did not retain a larger coefficient"
+    )
+    bootstrap = _bootstrap_fit(
+        pooled, samples=2, seed=seed + 200, fixed_penalties=True
+    )
+    assert bootstrap, "bootstrap did not produce player intervals"
+    assert any(
+        not np.allclose(
+            [interval[0], interval[1]],
+            [interval[2], interval[3]],
+        )
+        for interval in bootstrap.values()
+    ), "raw and group-relative bootstrap intervals were not distinguished"
+    pooled.bootstrap = bootstrap
+    formatted = _format_outputs(
+        pooled,
+        {
+            column: {
+                "player_id": column[2],
+                "player_name": column[2],
+                "position_group": "test",
+                "season": "2024",
+            }
+            for column in pooled.columns
+        },
+    )
+    assert {
+        "rapm_p10",
+        "rapm_p90",
+        "rapm_vs_group_avg_p10",
+        "rapm_vs_group_avg_p90",
+        "rapm_with_prior",
+        "rapm_no_prior",
+        "rapm_no_prior_vs_group_avg",
+        "stat_prior_raw_yds_per_play",
+        "stat_prior_yds_per_play",
+    }.issubset(formatted.columns), "bootstrap output interval columns are missing"
+    assert not np.allclose(
+        pooled.coefficients, pooled.coefficients_no_prior
+    ), "prior and no-prior coefficients unexpectedly match"
+    pooled_y = pooled.frame["yards"].to_numpy(dtype=float)
+    initial_baseline = _initial_type_mean(pooled_y, pooled.frame)
+    joint_coefficients, joint_intercept = _ridge_fit(
+        design,
+        pooled_y - initial_baseline,
+        pooled.lambda_value,
+        fit_intercept=True,
+    )
+    fixed_baseline = initial_baseline + joint_intercept
+    alternating, _, _, equivalence_passes, _ = _alternate_sides(
+        design,
+        pooled_y,
+        fixed_baseline,
+        columns,
+        counts,
+        groups,
+        pooled.lambda_value,
+        max_passes=40,
+        tolerance=0.001,
+        group_priors=False,
+        initial_coefficients=joint_coefficients,
+        log_name="equivalence self-test",
+    )
+    observed = counts >= 30
+    equivalence_correlation = float(
+        np.corrcoef(joint_coefficients[observed], alternating[observed])[0, 1]
+    )
+    assert equivalence_passes > 1, "block alternation converged without an update"
+    assert equivalence_correlation > 0.98, (
+        "joint and alternating ridge coefficients diverged: "
+        f"{equivalence_correlation:.3f}"
+    )
+    print(
+        "Joint/alternating coefficient correlation: "
+        f"{equivalence_correlation:.4f} after {equivalence_passes} block passes."
+    )
     assert all(np.isfinite(result.coefficients).all() for result in results_by_kind.values())
-    print("Self-test passed: yard normalization, three fits, and offense/defense sign recovery.")
+    print(
+        "Self-test passed: normalization, three fits, sign recovery, reproducibility, "
+        "separate penalties, bootstrap interval quantities, and joint/alternating equivalence."
+    )
 
 
 def _parse_lambda_grid(value: str) -> list[float]:
@@ -1886,6 +3184,16 @@ def _parse_lambda_grid(value: str) -> list[float]:
     return values
 
 
+def _parse_offense_penalty_ratios(value: str) -> list[float]:
+    try:
+        ratios = [float(item) for item in value.split(",") if item.strip()]
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    if not ratios or any(not math.isfinite(ratio) or ratio <= 0 for ratio in ratios):
+        raise argparse.ArgumentTypeError("offense penalty ratios must be positive finite values")
+    return ratios
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", help="CSV path, glob pattern, or directory containing CSVs")
@@ -1896,18 +3204,48 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not enrich player positions from nflreadpy.load_players()",
     )
+    parser.add_argument(
+        "--no-stat-priors",
+        action="store_true",
+        help="Disable historical nflreadpy player-stat priors",
+    )
+    parser.add_argument(
+        "--stat-prior-decay",
+        type=float,
+        default=DEFAULT_STAT_PRIOR_DECAY,
+        help="Year-over-year prior weight decay (default: 0.7)",
+    )
+    parser.add_argument(
+        "--stat-prior-scale",
+        type=float,
+        default=DEFAULT_STAT_PRIOR_SCALE,
+        help="Yards-per-play shift per 1 SD statistical score (default: 0.1)",
+    )
     parser.add_argument("--by-season", action="store_true", help="Estimate separate player-season effects")
     parser.add_argument("--cap", type=float, default=15.0, help="Yardage cap threshold (default: 15)")
-    parser.add_argument("--shrink", type=float, default=0.25, help="Beyond-cap shrink factor (default: 0.25)")
     parser.add_argument("--folds", type=int, default=5, help="Game-grouped cross-validation folds")
     parser.add_argument(
         "--lambda-grid",
         type=_parse_lambda_grid,
-        default=np.logspace(1, 5, 9).tolist(),
-        help="Comma-separated lambda values or START:STOP:COUNT (default: 10:100000:9)",
+        default=DEFAULT_LAMBDA_GRID,
+        help="Comma-separated lambda values or START:STOP:COUNT (default: 10:750:5)",
+    )
+    parser.add_argument(
+        "--offense-penalty-ratios",
+        type=_parse_offense_penalty_ratios,
+        default=list(DEFAULT_OFFENSE_PENALTY_RATIOS),
+        help=(
+            "Candidate offense penalty divided by defense penalty for grouped CV "
+            "(default: 0.5,1,2)"
+        ),
     )
     parser.add_argument("--max-passes", type=int, default=6)
-    parser.add_argument("--tol", type=float, default=0.005)
+    parser.add_argument(
+        "--tol",
+        type=float,
+        default=0.001,
+        help="Convergence limit for the largest within-group deviation change (default: 0.001)",
+    )
     parser.add_argument("--no-group-priors", action="store_true")
     parser.add_argument("--scheme-controls", action="store_true")
     parser.add_argument("--min-plays", type=int, default=100)
@@ -1916,7 +3254,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--bootstrap-fixed-penalties",
         action="store_true",
-        help="Backward-compatible alias; fixed bootstrap penalties are not used in this version",
+        help=(
+            "Keep full-data CV-selected penalties fixed in bootstrap replicates "
+            "instead of rerunning grouped penalty selection"
+        ),
+    )
+    parser.add_argument(
+        "--export-expectations",
+        action="store_true",
+        help="Write per-play expectations and performance residuals for the three fits",
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--selftest", action="store_true", help="Run the simulated-data self-test")
@@ -1930,16 +3276,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.selftest:
         _run_selftest()
         return 0
-    if args.bootstrap_fixed_penalties:
-        LOG.info("--bootstrap-fixed-penalties is accepted for compatibility but is not used")
     if not args.input:
         parser.error("--input is required unless --selftest is used")
     if args.folds < 2 or args.max_passes < 1 or args.bootstrap < 0:
         parser.error("--folds must be >= 2, --max-passes >= 1, and --bootstrap >= 0")
     if args.min_plays < 0 or args.min_carries < 0 or args.tol < 0:
         parser.error("play thresholds and --tol must be non-negative")
-    if args.cap < 0 or not 0 <= args.shrink <= 1:
-        parser.error("--cap must be non-negative and --shrink must be between 0 and 1")
+    if (
+        not math.isfinite(args.stat_prior_decay)
+        or not 0 < args.stat_prior_decay <= 1
+        or not math.isfinite(args.stat_prior_scale)
+        or args.stat_prior_scale < 0
+    ):
+        parser.error("--stat-prior-decay must be in (0, 1] and --stat-prior-scale non-negative")
+    if args.cap < 0:
+        parser.error("--cap must be non-negative")
+    if not args.offense_penalty_ratios:
+        parser.error("--offense-penalty-ratios must contain positive values")
     run_analysis(args)
     return 0
 

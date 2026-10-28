@@ -1,17 +1,17 @@
 # Yards-only football RAPM
 
-`football_rapm.py` fits exactly three sparse ridge models from NFL play-by-play CSVs:
-rushing plays, passing plays, and all rushing/passing plays pooled. Coefficients are in
-normalized yards per play and positive values favor the player's own side of the ball.
-The model adjusts for every listed offensive and defensive player, with rushing carriers
-represented by a separate ball-carrier variable.
+`football_rapm.py` estimates player ratings from NFL play-by-play participation
+CSVs. It fits exactly three sparse ridge models: rushing plays, passing plays, and
+the pooled set of those plays. Positive offensive ratings mean more yards gained;
+positive defensive ratings mean fewer yards allowed, after adjusting for the
+opposing players and pre-snap situation.
 
 ## Requirements
 
 Python 3.10 or newer with `pandas`, `numpy`, `scipy`, `scikit-learn`, and
 `nflreadpy`.
 
-## Example
+## Inspecting the current team CSVs
 
 The loader accepts optional play fields in addition to the participation
 columns, including `spread_line`, `pos_team` (or `posteam`),
@@ -37,75 +37,221 @@ roster position even if a participation row lists them on the opposite side;
 shrinkage/ranking groups still include side and role. K, P, and LS positions
 are shown as `SPEC` rather than `UNK`.
 
-Within each fitted model, player variables with 200 or fewer observed plays
-are not individually estimated. Their coefficients are held at the
-play-weighted average for qualified players in the same side, participation
-role, and position group; only variables with more than 200 plays contribute to
-that average. This cutoff is applied separately to each model and role, so a
-ball-carrier variable's count is carries, while an on-field variable's count is
-snaps/plays. If a group has no qualified players, its frozen value is zero (the
-model's neutral player-effect reference). Result CSVs mark these rows as
-`position_average_frozen` in `estimate_status`; values above the cutoff are
-marked `individual_estimate`. The low-count variables remain in the joint
-design at their frozen value, so their plays still inform their teammates'
-and opponents' estimates.
+## Statistical player priors
 
-From the repository root, pass the team participation data directory (duplicate
-plays in team files are merged automatically):
+By default, the model uses modest historical box-score priors from
+`nflreadpy.load_player_stats()` and participation data. It considers the five
+seasons before the earliest modeled season (or before each player-season when
+`--by-season` is used); modeled-season statistics are never used to construct
+that season's prior. For each position family and prior season, the listed
+statistics are oriented so higher is better, standardized within that family
+and season, averaged, then exponentially smoothed toward recent years. The
+default decay is `0.7` per year. The smoothed score is converted to a prior
+mean in yards per play at `0.1` yards per play per standard deviation and
+capped at +/-0.2 yards per play. Ridge penalizes deviations from these
+personalized means; group-prior mode centers the individual statistical
+component within the model's side/role/position group so the group level is
+still estimated from the play data.
+
+Missing player-seasons in an available historical season are imputed at that
+season's position-family 10th percentile for each supported, oriented metric.
+This intentionally avoids using statistics from the season being modeled.
+The output tables include `stat_prior_score`, the raw converted value
+`stat_prior_raw_yds_per_play`, the actual group-centered value applied by the
+model (`stat_prior_yds_per_play`), `stat_prior_years`, and
+`stat_prior_metrics` so the prior can be audited.
+Use `--no-stat-priors` to disable these priors, `--stat-prior-decay` to change
+the recency weighting, or `--stat-prior-scale` to change their yards-per-play
+scale.
+
+Each RAPM CSV reports both estimates: the existing `rapm` field remains the
+prior-based result, with explicit aliases `rapm_with_prior` and
+`rapm_no_prior` (plus per-100-play and group-relative fields). The no-prior
+ablation refits player effects and the intercept with all player-specific
+statistical prior means set to zero, while holding the prior model's
+cross-validated penalties and situational baseline specification fixed. This
+makes the output comparison attributable to the prior means rather than a
+different penalty search. Bootstrap intervals describe the prior-based result.
+The pooled file also includes prior and no-prior rushing and passing component
+columns, and the QB summary includes both versions.
+
+The implemented metric families are:
+
+- QB: passing yards/TDs, interceptions, sacks taken, and rushing yards per game.
+- RB: rushing yards/TDs, yards per carry, receiving yards, and fumbles lost per
+  game.
+- WR/TE: receiving yards/TDs, receptions per game, yards per reception, and
+  yards per target.
+- OL: penalties and penalty yards per game, plus listed offensive play
+  participations per game as a snaps-played proxy.
+- EDGE/DT: sacks, tackles for loss, QB hits, forced fumbles, and tackles per game.
+- LB: tackles, tackles for loss, sacks, interceptions, and passes defended per game.
+- CB/S: interceptions, passes defended, forced fumbles, tackles, and tackles for
+  loss per game.
+- K: field goals made/attempt percentage, extra points made, longest field goal,
+  and missed field goals.
+- P: net/gross punt average, inside-20 punts, touchbacks, and longest punt.
+
+The available data does not provide player-level pressures allowed or sacks
+allowed, so those OL measures are omitted. Kicking and punting plays remain
+excluded from RAPM even though those position statistics can form prior values.
+Priors are regularization anchors, not independent causal effects or proof that
+a player caused the observed performance.
+
+## Run the analysis
+
+Run from the repository root, supplying all team files for the season. The loader
+merges the duplicate play rows shared between teams:
 
 ```sh
 python3 Code/nfl_RAPM/football_rapm.py \
-  --input 'Code/nfl_RAPM/TEAM_PARTICIPATION_STATS/ARI/2024.csv' \
-  --outdir rapm_2024 \
-  --positions player_positions.csv
+  --input 'Code/nfl_RAPM/TEAM_PARTICIPATION_STATS/*/2025.csv' \
+  --outdir rapm_2025
 ```
 
-For a multi-team season, point to a directory or glob so that each game is represented
-by both teams' files:
+To estimate one shared player rating across all selected seasons, use a directory
+or glob spanning those seasons. Use `--by-season` when separate player-season
+ratings are desired:
 
 ```sh
 python3 Code/nfl_RAPM/football_rapm.py \
-  --input 'Code/nfl_RAPM/TEAM_PARTICIPATION_STATS/*/2024.csv' \
-  --outdir rapm_2024 \
-  --lambda-grid 10:100000:9 \
-  --bootstrap 100
+  --input 'Code/nfl_RAPM/TEAM_PARTICIPATION_STATS/*/*.csv' \
+  --outdir rapm_all_seasons \
+  --by-season
 ```
 
-The optional positions file has `player_id,position` columns and may include a `season`
-column for season-specific labels. Pass `--no-nflreadpy-positions` to skip the roster
-database lookup when desired. Run
-`python3 Code/nfl_RAPM/football_rapm.py --selftest` to exercise yardage normalization,
-position fallback/precedence, and synthetic offense/defense sign recovery.
+To add game-cluster bootstrap intervals, include a positions file for offense
+players, and export play-level expectations for auditing:
 
-## Outputs and options
+```sh
+python3 Code/nfl_RAPM/football_rapm.py \
+  --input 'Code/nfl_RAPM/TEAM_PARTICIPATION_STATS/*/2025.csv' \
+  --outdir rapm_2025 \
+  --positions player_positions.csv \
+  --bootstrap 100 \
+  --export-expectations
+```
+
+The optional positions CSV requires `player_id,position` columns and can include
+`season` for season-specific labels. `--no-nflreadpy-positions` disables the
+database lookup if you want to rely only on labels from the CSVs and any supplied
+positions file. Install the required runtime packages with
+`python3 -m pip install pandas numpy scipy scikit-learn nflreadpy`. Run the
+synthetic checks with:
+
+```sh
+python3 Code/nfl_RAPM/football_rapm.py --selftest
+```
+
+## Estimation and options
+
+Each fit selects penalties using game-grouped cross-validation of the reported
+pipeline: the same fold-local gradient-boosted situational baseline, joint
+offense/defense fit, offense/defense alternation, position-group priors, and
+historical statistical prior means are used within each validation fold. The
+contextual baseline is fit once per fold
+and kept fixed during player fitting; this avoids retraining the comparatively
+expensive baseline for every candidate penalty and side-alternation pass.
+Progress through baseline folds and penalty candidates is logged. `CV RMSE (full pipeline, grouped folds)` and
+`CV RMSE (baseline-only)` in diagnostics use the same held-out games; the former
+scores the player model and baseline together, while the latter scores the
+baseline without player effects.
+
+The default penalty candidates share a defense penalty (lambda) and test
+offense/defense penalty ratios of `0.5`, `1`, and `2`. The offense penalty is
+`lambda * ratio`; the defense penalty is `lambda`. Thus ratios below 1 test
+weaker offense shrinkage. Group-prior shrinkage can be disabled with
+`--no-group-priors`; `--scheme-controls` opts into the available pre-snap defensive
+scheme controls. Both candidate sets are selected together by grouped CV. The
+lambda grid accepts explicit values or a log-spaced range,
+such as `--lambda-grid 10:750:5`. By default, grouped cross-validation searches
+five logarithmically spaced lambda values from 10 through 750; it selects the
+best candidate, so 750 is an upper bound on the default search rather than a
+forced lambda. An explicit `--lambda-grid` overrides those defaults. Use
+`--offense-penalty-ratios 0.25,0.5,1,2` to override the default ratio candidates.
+Result CSVs and diagnostics record the selected offense and defense penalties.
+
+Low-leverage regulation plays are excluded before fitting using the absolute
+pre-play lead: at least 21 points from 30:00–15:00 remaining, 17 from 15:00–10:00,
+14 from 10:00–5:00, 10 from 5:00–3:00, and 9 from 3:00–0:00. Time beyond 30:00
+and overtime are not in these bands. The score fields are cumulative for each
+play, so filtering uses the prior play's score rather than a score made by the
+current play. Clock uses `game_seconds_remaining` when present, otherwise
+quarter and `time_on_clock_start`. When either score or clock state is
+unavailable, the play is kept and the missing-state count is written to
+`diagnostics.txt`; exclusion totals are also reported there by time band.
+
+The default convergence requirement is `--tol 0.001`: offense/defense
+alternation continues until the largest within-group deviation change is below
+0.001 or `--max-passes` is reached. Bootstrap and split-half refits use the same
+0.001 threshold.
+
+Useful controls include `--folds`, `--max-passes`, `--tol`, `--cap`,
+`--min-plays`, `--min-carries`, and `--seed`. Yardage is hard-clipped to the
+range from -15 to +15 by default (`--cap 15`).
 
 The output directory contains `rapm_rush.csv`, `rapm_pass.csv`,
-`rapm_all_plays.csv`, `rapm_qb.csv`, and `diagnostics.txt`. The full RAPM tables include
-all player-side-role variables, including position-average values frozen for low-count
-players. The pooled `rapm_all_plays.csv` also includes the separately fitted
-`rush_rapm` and `pass_rapm` values, their per-100-play equivalents, and corresponding
-play counts for each matching player ID, side, role, and (when enabled) season. A blank
-component means that player-side-role had no observations in that play-type fit; these
-separate-model values are not added together. QB and position leaderboards are reporting
-views of the three fits. Common options include `--by-season`, `--cap`,
-`--shrink`, `--folds`, `--lambda-grid`, `--max-passes`, `--tol`,
-`--no-group-priors`, `--scheme-controls`, `--min-plays`, `--min-carries`,
-`--bootstrap`, and `--seed`. Scheme controls, when requested, use only
-`defense_personnel`, `n_defense`, and `defenders_in_box` in the situational baseline.
+`rapm_all_plays.csv`, `rapm_qb.csv`, and `diagnostics.txt`. With
+`--export-expectations`, it also contains `play_expectations.csv`, with expected
+yards for each side and offense/defense performance residuals for each of the
+three fits. The pooled `rapm_all_plays.csv` retains its pooled RAPM and includes
+separate `rush_rapm` and `pass_rapm` estimates, per-100-play values, and
+play-count columns for each player's matching side and role; a blank component
+means the player had no observations in that play-type fit. Leaderboards are
+printed to the console.
 
-## Data assumptions and limitations
+With `--bootstrap`, `rapm_p10` and `rapm_p90` are the 10th and 90th percentiles
+for raw `rapm`; `rapm_vs_group_avg_p10` and
+`rapm_vs_group_avg_p90` are the corresponding percentiles for deviation from
+the group target. Each game-cluster replicate refits the situational baseline and player
+coefficients and reruns grouped CV to select lambda and the offense/defense
+penalty ratio. The intervals therefore reflect game-sampling and penalty
+selection variability, conditional on the chosen model specification and
+candidate grids. By default, each replicate reruns grouped penalty selection;
+use `--bootstrap-fixed-penalties` to reuse the full-data selected lambda and
+offense/defense penalty ratio. This faster option still resamples games and
+refits the contextual baseline and player coefficients, but does not include
+penalty-selection variability. Bootstrap progress is logged by replicate.
 
-The loader uses game IDs formatted `season_week_home_away` to fill missing season and
-week fields, matching the team-participation files in this repository. Score
-differentials are omitted when `posteam` is absent or when score fields are constant
-within games, since team-file ownership does not establish which side had possession.
-When a required optional field such as rusher IDs is absent, carrier-specific estimates
-are unavailable rather than inferred.
+## Aggregate existing seasons
+
+To combine existing season exports without rerunning the play-level regression,
+use `aggregate_rapm_years.py`. It reads `rapm_all_plays.csv` from each
+`rapm_[YEAR]` folder and supports an inclusive year range:
+
+```sh
+python3 Code/nfl_RAPM/aggregate_rapm_years.py \
+  --input-root . \
+  --start-year 2018 \
+  --end-year 2025 \
+  --outdir rapm_multi_year
+```
+
+The aggregator emits one `final_RAPM` per player, using only that player's
+primary side (the side with more observed plays across supplied seasons). It
+never adds offensive and defensive ratings; any opposite-side records are
+excluded from the final value and reported in diagnostic columns. For any
+unqualified season (<200 plays), the observed RAPM is replaced by the
+same-season, same-side, same-position-group 25th percentile among qualified
+players. If that position group has no qualified players, it falls back to the
+same-side seasonal 25th percentile; if that is unavailable too, it uses zero.
+The unqualified season retains a capped low sample weight.
+
+It prints the weighting formula and an auditable worked example before writing
+files. Use `--preview-only` to inspect the formula without creating outputs.
+Results include the player-level CSV, season-by-season calculations, examples,
+input diagnostics, half-life and sample-weight sensitivity analyses, and a
+summary report. Verify the calculation logic with:
+
+```sh
+python3 Code/nfl_RAPM/aggregate_rapm_years.py --selftest
+```
+
+## Limitations
 
 One season of football RAPM is noisy. Players who are almost always on the field
-together (such as a starting offensive line) cannot be separated reliably and will be
-shrunk toward similar values. The response is yards only: incompletions and
-interceptions appear as zero-yard plays, while turnovers, penalties, and scoring are
-not separately modeled. Ratings adjust for teammates and opponents; they are not proof
-of causal ability. Team labels are reported only when the offensive team can be
-identified from `posteam`; otherwise that output field is blank.
+together (such as a starting offensive line) cannot be separated reliably and
+will be shrunk toward similar values. The response is yards only: incompletions
+and interceptions appear as zero-yard plays, while turnovers, penalties, and
+scoring are not modeled separately. Ratings adjust for teammates and opponents;
+they are not proof of causal ability.
