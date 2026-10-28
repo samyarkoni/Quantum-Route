@@ -167,6 +167,8 @@ class FitResult:
     offense_penalty_candidates: tuple[float, ...] = DEFAULT_OFFENSE_PENALTY_RATIOS
     stat_prior: np.ndarray | None = None
     stat_prior_applied: np.ndarray | None = None
+    coefficients_no_prior: np.ndarray | None = None
+    group_targets_no_prior: np.ndarray | None = None
 
 
 def normalize_yards(yards: float, cap: float = 15.0) -> float:
@@ -1748,6 +1750,47 @@ def fit_model(
     )
 
 
+def _fit_without_stat_prior(result: FitResult) -> tuple[np.ndarray, np.ndarray]:
+    """Refit coefficients with zero player-specific means, holding fit settings fixed."""
+    if not result.columns:
+        return np.zeros(0, dtype=float), np.zeros(0, dtype=float)
+    target = result.frame["yards"].to_numpy(dtype=float)
+    penalty_factors = np.asarray([
+        result.offense_penalty_ratio if column[0] == "offense" else 1.0
+        for column in result.columns
+    ])
+    coefficients, intercept = _ridge_fit(
+        result.design,
+        target - result.baseline,
+        result.lambda_value,
+        fit_intercept=True,
+        column_penalty_factors=penalty_factors,
+        prior_mean=np.zeros(len(result.columns), dtype=float),
+    )
+    baseline = result.baseline + intercept
+    if result.max_passes > 1:
+        coefficients, targets, _, _, _ = _alternate_sides(
+            result.design,
+            target,
+            baseline,
+            result.columns,
+            result.counts,
+            result.group_keys,
+            result.lambda_value,
+            max_passes=result.max_passes - 1,
+            tolerance=result.tolerance,
+            group_priors=result.group_priors_enabled,
+            initial_coefficients=coefficients,
+            log_name=f"{result.name} no-prior",
+            log_iterations=False,
+            offense_penalty_ratio=result.offense_penalty_ratio,
+            stat_prior=np.zeros(len(result.columns), dtype=float),
+        )
+    else:
+        targets = np.zeros_like(coefficients)
+    return coefficients, targets
+
+
 def _bootstrap_fit(
     result: FitResult, samples: int, seed: int, fixed_penalties: bool = False
 ) -> dict[tuple[str, str, str], tuple[float, float, float, float]]:
@@ -1928,6 +1971,26 @@ def _format_outputs(
                 "rapm": float(result.coefficients[index]),
                 "rapm_per_100": float(result.coefficients[index] * 100),
                 "rapm_vs_group_avg": deviation,
+                "rapm_with_prior": float(result.coefficients[index]),
+                "rapm_with_prior_per_100": float(result.coefficients[index] * 100),
+                "rapm_with_prior_vs_group_avg": deviation,
+                "rapm_no_prior": float(
+                    result.coefficients_no_prior[index]
+                    if result.coefficients_no_prior is not None
+                    else result.coefficients[index]
+                ),
+                "rapm_no_prior_per_100": float(
+                    (result.coefficients_no_prior[index]
+                     if result.coefficients_no_prior is not None
+                     else result.coefficients[index]) * 100
+                ),
+                "rapm_no_prior_vs_group_avg": float(
+                    result.coefficients_no_prior[index]
+                    - result.group_targets_no_prior[index]
+                    if result.coefficients_no_prior is not None
+                    and result.group_targets_no_prior is not None
+                    else deviation
+                ),
                 "stat_prior_score": float(player.get("stat_prior_score", 0.0)),
                 "stat_prior_raw_yds_per_play": float(
                     result.stat_prior[index]
@@ -2011,18 +2074,26 @@ def _add_play_type_components(
         if key not in output:
             output[key] = pd.Series(dtype="string")
     for play_type, component in (("rush", rush), ("pass", passing)):
-        component_columns = keys + ["rapm", "rapm_per_100", "n_plays"]
-        if component.empty:
-            selected = pd.DataFrame(columns=component_columns)
+        aliases = {
+            "rapm": f"{play_type}_rapm",
+            "rapm_per_100": f"{play_type}_rapm_per_100",
+            "rapm_no_prior": f"{play_type}_rapm_no_prior",
+            "rapm_no_prior_per_100": f"{play_type}_rapm_no_prior_per_100",
+            "n_plays": f"{play_type}_n_plays",
+        }
+        source_columns = keys + ["rapm", "rapm_per_100", "n_plays"]
+        if {"rapm_no_prior", "rapm_no_prior_per_100"}.issubset(component.columns):
+            source_columns.extend(["rapm_no_prior", "rapm_no_prior_per_100"])
         else:
-            selected = component[component_columns]
-        renamed = selected.rename(
-            columns={
-                "rapm": f"{play_type}_rapm",
-                "rapm_per_100": f"{play_type}_rapm_per_100",
-                "n_plays": f"{play_type}_n_plays",
-            }
-        )
+            component = component.copy()
+            component["rapm_no_prior"] = component["rapm"]
+            component["rapm_no_prior_per_100"] = component["rapm_per_100"]
+            source_columns.extend(["rapm_no_prior", "rapm_no_prior_per_100"])
+        if component.empty:
+            selected = pd.DataFrame(columns=source_columns)
+        else:
+            selected = component[source_columns]
+        renamed = selected.rename(columns=aliases)
         output = output.merge(renamed, on=keys, how="left", validate="one_to_one")
     return output
 
@@ -2057,9 +2128,16 @@ def _make_qb_view(
         run_count = int(rush_row.n_plays) if rush_row else 0
         pass_deviation = float(pass_row.rapm_vs_group_avg) if pass_row else 0.0
         run_deviation = float(rush_row.rapm_vs_group_avg) if rush_row else 0.0
+        pass_no_prior = float(pass_row.rapm_no_prior_vs_group_avg) if pass_row else 0.0
+        run_no_prior = float(rush_row.rapm_no_prior_vs_group_avg) if rush_row else 0.0
         total = pass_count + run_count
         combined = (
             (pass_deviation * pass_count + run_deviation * run_count) / total if total else np.nan
+        )
+        combined_no_prior = (
+            (pass_no_prior * pass_count + run_no_prior * run_count) / total
+            if total
+            else np.nan
         )
         output.append(
             {
@@ -2067,10 +2145,13 @@ def _make_qb_view(
                 "player_name": player["player_name"],
                 "season": season,
                 "pass_rapm": float(pass_row.rapm) if pass_row else np.nan,
+                "pass_rapm_no_prior": float(pass_row.rapm_no_prior) if pass_row else np.nan,
                 "n_pass_plays": pass_count,
                 "qb_run_rapm": float(rush_row.rapm) if rush_row else np.nan,
+                "qb_run_rapm_no_prior": float(rush_row.rapm_no_prior) if rush_row else np.nan,
                 "n_qb_runs": run_count,
                 "combined_qb_rapm": combined,
+                "combined_qb_rapm_no_prior": combined_no_prior,
             }
         )
     return pd.DataFrame(output)
@@ -2393,6 +2474,9 @@ def run_analysis(args: argparse.Namespace) -> None:
                 args.offense_penalty_ratios,
                 stat_prior=prior,
             )
+            result.coefficients_no_prior, result.group_targets_no_prior = (
+                _fit_without_stat_prior(result)
+            )
             result.bootstrap = _bootstrap_fit(
                 result,
                 args.bootstrap,
@@ -2431,6 +2515,12 @@ def run_analysis(args: argparse.Namespace) -> None:
                 "rapm",
                 "rapm_per_100",
                 "rapm_vs_group_avg",
+                "rapm_with_prior",
+                "rapm_with_prior_per_100",
+                "rapm_with_prior_vs_group_avg",
+                "rapm_no_prior",
+                "rapm_no_prior_per_100",
+                "rapm_no_prior_vs_group_avg",
                 "stat_prior_score",
                 "stat_prior_raw_yds_per_play",
                 "stat_prior_yds_per_play",
@@ -2447,9 +2537,13 @@ def run_analysis(args: argparse.Namespace) -> None:
                 [
                     "rush_rapm",
                     "rush_rapm_per_100",
+                    "rush_rapm_no_prior",
+                    "rush_rapm_no_prior_per_100",
                     "rush_n_plays",
                     "pass_rapm",
                     "pass_rapm_per_100",
+                    "pass_rapm_no_prior",
+                    "pass_rapm_no_prior_per_100",
                     "pass_n_plays",
                 ]
             )
@@ -2483,10 +2577,13 @@ def run_analysis(args: argparse.Namespace) -> None:
         "player_name",
         *(["season"] if args.by_season else []),
         "pass_rapm",
+        "pass_rapm_no_prior",
         "n_pass_plays",
         "qb_run_rapm",
+        "qb_run_rapm_no_prior",
         "n_qb_runs",
         "combined_qb_rapm",
+        "combined_qb_rapm_no_prior",
     ]
     for column in qb_columns:
         if column not in qb_view:
@@ -2742,6 +2839,8 @@ def _run_selftest() -> None:
                 "season": "",
                 "rapm": 0.2,
                 "rapm_per_100": 20.0,
+                "rapm_no_prior": 0.15,
+                "rapm_no_prior_per_100": 15.0,
                 "n_plays": 12,
             }
         ]
@@ -2755,6 +2854,8 @@ def _run_selftest() -> None:
                 "season": "",
                 "rapm": 0.3,
                 "rapm_per_100": 30.0,
+                "rapm_no_prior": 0.25,
+                "rapm_no_prior_per_100": 25.0,
                 "n_plays": 34,
             }
         ]
@@ -2762,6 +2863,8 @@ def _run_selftest() -> None:
     components = _add_play_type_components(pooled, rush, passing, by_season=False)
     assert components.loc[0, "rush_rapm"] == 0.2
     assert components.loc[0, "pass_rapm"] == 0.3
+    assert components.loc[0, "rush_rapm_no_prior"] == 0.15
+    assert components.loc[0, "pass_rapm_no_prior"] == 0.25
     assert pd.isna(components.loc[1, "rush_rapm"])
     assert components.loc[1, "side"] == "defense"
     seasonal_pooled = pd.concat(
@@ -2893,6 +2996,9 @@ def _run_selftest() -> None:
             offense_penalty_ratios=(1.0,),
             stat_prior=synthetic_stat_prior,
         )
+        result.coefficients_no_prior, result.group_targets_no_prior = (
+            _fit_without_stat_prior(result)
+        )
         estimates = {
             (column[1], metadata[column]["player_id"]): result.coefficients[i]
             for i, column in enumerate(columns)
@@ -2960,6 +3066,9 @@ def _run_selftest() -> None:
         offense_penalty_ratios=(1.0,),
         stat_prior=pooled.stat_prior,
     )
+    repeat.coefficients_no_prior, repeat.group_targets_no_prior = (
+        _fit_without_stat_prior(repeat)
+    )
     assert np.array_equal(pooled.coefficients, repeat.coefficients), "fixed-seed fit did not reproduce"
     penalty_design = sparse.eye(2, format="csr")
     penalty_coefficients, _ = _ridge_fit(
@@ -3001,9 +3110,15 @@ def _run_selftest() -> None:
         "rapm_p90",
         "rapm_vs_group_avg_p10",
         "rapm_vs_group_avg_p90",
+        "rapm_with_prior",
+        "rapm_no_prior",
+        "rapm_no_prior_vs_group_avg",
         "stat_prior_raw_yds_per_play",
         "stat_prior_yds_per_play",
     }.issubset(formatted.columns), "bootstrap output interval columns are missing"
+    assert not np.allclose(
+        pooled.coefficients, pooled.coefficients_no_prior
+    ), "prior and no-prior coefficients unexpectedly match"
     pooled_y = pooled.frame["yards"].to_numpy(dtype=float)
     initial_baseline = _initial_type_mean(pooled_y, pooled.frame)
     joint_coefficients, joint_intercept = _ridge_fit(

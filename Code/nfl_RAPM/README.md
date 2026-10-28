@@ -64,6 +64,17 @@ Use `--no-stat-priors` to disable these priors, `--stat-prior-decay` to change
 the recency weighting, or `--stat-prior-scale` to change their yards-per-play
 scale.
 
+Each RAPM CSV reports both estimates: the existing `rapm` field remains the
+prior-based result, with explicit aliases `rapm_with_prior` and
+`rapm_no_prior` (plus per-100-play and group-relative fields). The no-prior
+ablation refits player effects and the intercept with all player-specific
+statistical prior means set to zero, while holding the prior model's
+cross-validated penalties and situational baseline specification fixed. This
+makes the output comparison attributable to the prior means rather than a
+different penalty search. Bootstrap intervals describe the prior-based result.
+The pooled file also includes prior and no-prior rushing and passing component
+columns, and the QB summary includes both versions.
+
 The implemented metric families are:
 
 - QB: passing yards/TDs, interceptions, sacks taken, and rushing yards per game.
